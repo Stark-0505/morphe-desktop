@@ -23,6 +23,7 @@ data class UpdateInfo(
 object UpdateChecker {
     /** Checks GitHub for newer versions on [channel], defaulting to the current build's channel. */
     fun checkInfo(channel: ReleaseChannel? = null): UpdateInfo? {
+        var connection: HttpURLConnection? = null
         try {
             val currentVersion = javaClass.getResourceAsStream("/app/morphe/cli/version.properties")
                 ?.use { stream ->
@@ -40,7 +41,7 @@ object UpdateChecker {
                     "https://raw.githubusercontent.com/MorpheApp/morphe-desktop/refs/heads/main/gradle.properties"
             }
 
-            val connection = URI(url).toURL().openConnection() as HttpURLConnection
+            connection = URI(url).toURL().openConnection() as HttpURLConnection
             connection.connectTimeout = 3000
             connection.readTimeout = 3000
 
@@ -66,6 +67,8 @@ object UpdateChecker {
         } catch (ex: Exception) {
             Logger.debug("Could not check for CLI update: $ex")
             return null
+        } finally {
+            connection?.disconnect()
         }
     }
 

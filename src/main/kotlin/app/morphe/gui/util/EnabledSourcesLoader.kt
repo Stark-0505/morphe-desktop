@@ -198,6 +198,29 @@ fun EnabledSourcesLoader.Result?.sourceErrorMap(): Map<String, String> {
     }
 }
 
+/**
+ * sourceId to that source's OWN patch count (not the cross-source union). Backed by
+ * [EnabledSourcesLoader.Result.patchesBySource], which is already computed per
+ * source during loading, so this is a projection, not a second loading pipeline.
+ */
+fun EnabledSourcesLoader.Result?.sourcePatchCountMap(): Map<String, Int> =
+    this?.patchesBySource?.mapValues { (_, patches) -> patches.size } ?: emptyMap()
+
+/**
+ * sourceId to the newest release tag available in that source's followed channel,
+ * when it differs from the resolved/downloaded version. Null entries (or an absent
+ * key) mean "up to date" or "unknown" — the source-details UI treats both the same.
+ */
+fun EnabledSourcesLoader.Result?.sourceUpdateAvailableMap(): Map<String, String> {
+    val snapshot = this ?: return emptyMap()
+    return buildMap {
+        snapshot.resolved.forEach { r ->
+            val latest = r.latestAvailableVersion
+            if (latest != null && latest != r.resolvedVersion) put(r.source.id, latest)
+        }
+    }
+}
+
 /** Logs patch source resolution failure. */
 fun EnabledSourcesLoader.Result.logIfFailed(prefix: String = "") {
     if (anyLoaded) return

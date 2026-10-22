@@ -8,6 +8,7 @@ package app.morphe.engine.patches
 import app.morphe.engine.model.Release
 import app.morphe.engine.util.Logger
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -22,6 +23,13 @@ class PatchRepository(
     companion object {
         private const val CACHE_TTL_MS = 5 * 60 * 1000L // 5 minutes
         private const val FAILURE_TTL_MS = 10 * 1000L // 10 seconds to coalesce concurrent callers on failure
+
+        /**
+         * One lock per cache file, shared by every repository instance — more than one can
+         * exist for the same source — so the same asset is never downloaded by two writers.
+         * Bounded by the number of distinct cached bundle files.
+         */
+        private val downloadLocks = ConcurrentHashMap<String, Mutex>()
     }
 
     private val fetchMutex = Mutex()
@@ -121,13 +129,25 @@ class PatchRepository(
         }
 
         val targetFile = PatchCache.cachedFile(repoPath, release, asset)
-        val result = remoteSource.downloadAsset(asset, targetFile) { bytesRead, contentLength ->
-            if (contentLength != null && contentLength > 0L) {
-                onProgress((bytesRead.toFloat() / contentLength).coerceIn(0f, 1f))
+
+        // Two callers racing for the same release asset must not both stream into the same
+        // `.part` file (the download truncates it on open, so a second writer corrupts the
+        // first's stream). Serialize per target file; downloads of different files stay parallel.
+        downloadLocks.getOrPut(targetFile.absolutePath) { Mutex() }.withLock {
+            // Re-check under the lock: a concurrent caller may have just finished this exact file.
+            PatchCache.getCachedFile(repoPath, release)?.let { cachedFile ->
+                Logger.info("Using cached patches: ${cachedFile.absolutePath} (${cachedFile.length()} bytes)")
+                onProgress(1f)
+                return@withContext Result.success(cachedFile)
             }
+            val result = remoteSource.downloadAsset(asset, targetFile) { bytesRead, contentLength ->
+                if (contentLength != null && contentLength > 0L) {
+                    onProgress((bytesRead.toFloat() / contentLength).coerceIn(0f, 1f))
+                }
+            }
+            if (result.isSuccess) onProgress(1f)
+            result
         }
-        if (result.isSuccess) onProgress(1f)
-        result
     }
 
     /** Deletes cached releases and on-disk patch files. */

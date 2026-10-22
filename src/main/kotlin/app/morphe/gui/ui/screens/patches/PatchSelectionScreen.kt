@@ -38,6 +38,7 @@ import app.morphe.gui.LocalGroupPatchesByCategory
 import app.morphe.gui.LocalNavController
 import app.morphe.gui.PatchSelectionParams
 import app.morphe.gui.PatchingScreenRoute
+import app.morphe.gui.data.repository.PatchSourceManager
 import app.morphe.gui.navigateComplex
 import app.morphe.gui.ui.components.MorpheBadge
 import app.morphe.gui.ui.components.MorpheBadgeTone
@@ -57,6 +58,10 @@ import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 import org.koin.core.parameter.parametersOf
 
+/**
+ * Screen for selecting which patches to apply.
+ * This screen is the one that selects which patch options need to be applied. Eg: Custom Branding, Spoof App Version, etc.
+ */
 @Composable
 fun PatchSelectionScreen(
     params: PatchSelectionParams,
@@ -64,7 +69,8 @@ fun PatchSelectionScreen(
         val effectiveList = params.patchesFilePaths.takeIf { it.isNotEmpty() } ?: listOf(params.patchesFilePath)
         parametersOf(
             params.apkPath, params.apkName, params.patchesFilePath, params.packageName, params.apkArchitectures,
-            effectiveList, params.patchSourceNames, params.initialSelectionByBundle, params.initialPatchOptions,
+            effectiveList, params.patchSourceNames, params.patchSourceIds,
+            params.initialSelectionByBundle, params.initialPatchOptions,
             params.apkVersion,
         )
     }
@@ -77,6 +83,8 @@ fun PatchSelectionScreenContent(viewModel: PatchSelectionViewModel) {
     val primaryColor = MorpheTheme.colors.primary
     val navController = LocalNavController.current
     val engineConfigRepository: EngineConfigRepository = koinInject()
+    val patchSourceManager: PatchSourceManager = koinInject()
+    val allSources by patchSourceManager.allSources.collectAsState()
     val uiState by viewModel.uiState.collectAsState()
     val targetPackage = viewModel.targetPackage()
 
@@ -377,8 +385,19 @@ fun PatchSelectionScreenContent(viewModel: PatchSelectionViewModel) {
                             onApplyDefaults = { viewModel.applyPatchDefaultsInBundle(currentBundle.bundleId) },
                             onApplyAll = { viewModel.selectAllInBundle(currentBundle.bundleId) },
                             onApplyNone = { viewModel.deselectAllInBundle(currentBundle.bundleId) },
+                            onCopyFrom = { viewModel.openCopySelectionPicker(currentBundle.bundleId, allSources) },
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                         )
+
+                        if (uiState.copySelectionForBundle != null) {
+                            CopySelectionDialog(
+                                candidates = uiState.copySelectionCandidates,
+                                loading = uiState.copySelectionLoading,
+                                nothingToCopy = uiState.copySelectionNothingToCopy,
+                                onDismiss = { viewModel.closeCopySelectionPicker() },
+                                onPick = { viewModel.applyCopySelection(it) },
+                            )
+                        }
                     }
 
                     Box(
@@ -498,7 +517,6 @@ fun PatchSelectionScreenContent(viewModel: PatchSelectionViewModel) {
         }
     }
 }
-
 
 /** New patches float to the top, the rest keep the bundle's own order. */
 private fun List<PatchMetadata>.newestFirst(newIds: Set<String>): List<PatchMetadata> =

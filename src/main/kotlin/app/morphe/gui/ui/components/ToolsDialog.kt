@@ -19,14 +19,19 @@ import androidx.compose.ui.unit.dp
 import app.morphe.engine.CacheManager
 import app.morphe.engine.MorpheData
 import app.morphe.engine.util.Logger
+import app.morphe.gui.data.appicon.AppIconRepository
 import app.morphe.gui.ui.icons.MorpheIcons
 import app.morphe.gui.ui.theme.MorpheColors
 import app.morphe.gui.ui.theme.MorpheTheme
 import app.morphe.gui.util.FormatUtils
 import app.morphe.gui.util.currentLocale
+import app.morphe.gui.util.revealInFileManager
 import app.morphe.morphe_desktop.generated.resources.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.stringResource
-import java.awt.Desktop
+import org.koin.compose.koinInject
 
 /** Modal dialog providing diagnostics, cache cleanup, and application tools. */
 @Composable
@@ -35,6 +40,8 @@ fun ToolsDialog(
     allowCacheClear: Boolean = true,
     onCacheCleared: () -> Unit = {},
 ) {
+    val coroutineScope = rememberCoroutineScope()
+    val appIconRepository = koinInject<AppIconRepository>()
     val borderColor = MaterialTheme.colorScheme.outline.copy(alpha = MorpheTheme.alphas.borderMuted)
 
     var showClearCacheConfirm by remember { mutableStateOf(false) }
@@ -64,14 +71,7 @@ fun ToolsDialog(
                     borderColor = borderColor,
                     contentAlignment = Alignment.CenterStart,
                     onClick = {
-                        try {
-                            val logsDir = MorpheData.logsDir
-                            if (Desktop.isDesktopSupported()) {
-                                Desktop.getDesktop().open(logsDir)
-                            }
-                        } catch (e: Exception) {
-                            Logger.error("Failed to open logs folder", e)
-                        }
+                        coroutineScope.launch { revealInFileManager(MorpheData.logsDir) }
                     }
                 )
 
@@ -85,14 +85,7 @@ fun ToolsDialog(
                     borderColor = borderColor,
                     contentAlignment = Alignment.CenterStart,
                     onClick = {
-                        try {
-                            val appDataDir = MorpheData.root
-                            if (Desktop.isDesktopSupported()) {
-                                Desktop.getDesktop().open(appDataDir)
-                            }
-                        } catch (e: Exception) {
-                            Logger.error("Failed to open app data folder", e)
-                        }
+                        coroutineScope.launch { revealInFileManager(MorpheData.root) }
                     }
                 )
 
@@ -110,7 +103,21 @@ fun ToolsDialog(
 
                 Spacer(Modifier.height(6.dp))
 
-                val cacheBytes = remember { CacheManager.getCacheSizeBytes() }
+                // Clear cache
+                // produceState, not remember { getCacheSizeBytes() }: that walked
+                // patches/logs/avatars/app-icons synchronously on the composition
+                // (effectively UI) thread every time this dialog opened. Four directory
+                // walks is cheap for most users, but an app-icons cache in particular can
+                // grow into the hundreds of files over normal use (one PNG per
+                // ever-resolved app, across every connected device) — enough for this to
+                // become a perceptible open-dialog stutter rather than genuinely free.
+                // produceState runs the walk on Dispatchers.IO and starts the dialog at
+                // 0 bytes (Clear Cache briefly disabled via the `cacheBytes > 0L` check
+                // below) until it reports back, rather than blocking the frame that opens
+                // this dialog on it.
+                val cacheBytes by produceState(initialValue = 0L) {
+                    value = withContext(Dispatchers.IO) { CacheManager.getCacheSizeBytes() }
+                }
                 val cacheColor = when {
                     cacheCleared -> MorpheColors.Teal
                     cacheClearFailed -> MaterialTheme.colorScheme.error
@@ -174,11 +181,16 @@ fun ToolsDialog(
                 MorpheButton(
                     label = stringResource(Res.string.clear),
                     onClick = {
-                        val success = clearAllCache()
-                        cacheCleared = success
-                        cacheClearFailed = !success
                         showClearCacheConfirm = false
-                        if (success) onCacheCleared()
+                        coroutineScope.launch {
+                            val success = clearAllCache()
+                            cacheCleared = success
+                            cacheClearFailed = !success
+                            // Even a partial clear may have removed icon files this instance still
+                            // holds decoded copies and cooldowns for.
+                            appIconRepository.invalidateAll()
+                            if (success) onCacheCleared()
+                        }
                     },
                     variant = MorpheButtonVariant.DANGER,
                     size = MorpheButtonSize.COMPACT,
@@ -204,12 +216,13 @@ fun ToolsDialog(
 private fun formatCacheSize(totalSize: Long): String =
     FormatUtils.formatFileSize(totalSize, currentLocale())
 
-private fun clearAllCache(): Boolean {
+/** Runs the file-level clear off the main thread; the caller drops in-memory icon state on success. */
+private suspend fun clearAllCache(): Boolean = withContext(Dispatchers.IO) {
     val result = CacheManager.clearCaches()
     if (result.success) {
         Logger.info("Cache cleared successfully (${result.bytesFreed} bytes freed)")
     } else {
         Logger.error("Cache clear incomplete: ${result.failedFiles} file(s) could not be deleted (may be locked)")
     }
-    return result.success
+    result.success
 }

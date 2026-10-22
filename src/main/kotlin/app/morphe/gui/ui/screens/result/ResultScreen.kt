@@ -61,7 +61,8 @@ fun ResultScreenContent(outputPath: String) {
 
     val outputFile = File(outputPath)
     val scope = rememberCoroutineScope()
-    val adbManager = remember { AdbManager() }
+    // Shared with DeviceMonitor's own polling — see DeviceMonitor.adbManager's doc.
+    val adbManager: AdbManager = koinInject()
     val engineConfigRepository: EngineConfigRepository = koinInject()
 
     // ADB state from DeviceMonitor

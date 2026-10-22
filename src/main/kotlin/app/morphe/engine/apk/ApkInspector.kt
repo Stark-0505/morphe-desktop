@@ -6,6 +6,7 @@
 package app.morphe.engine.apk
 
 import app.morphe.engine.util.Logger
+import app.morphe.engine.util.readBytesBounded
 import com.reandroid.arsc.chunk.xml.AndroidManifestBlock
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -25,6 +26,9 @@ object AndroidArchitectures {
 
 /** Reads manifest metadata and architectures from APKs and bundles in-memory. */
 object ApkInspector {
+    /** A manifest larger than this is not a real one (they are tens of KB); never buffer more of untrusted input. */
+    private const val MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+
     private val splitPatterns = listOf("split_config", "config.", "split_")
 
     /** Extracts manifest attributes and CPU architectures, or null if invalid. */
@@ -109,7 +113,7 @@ object ApkInspector {
                     var innerEntry = innerZip.nextEntry
                     while (innerEntry != null) {
                         if (innerEntry.name == "AndroidManifest.xml") {
-                            val manifestBytes = innerZip.readBytes()
+                            val manifestBytes = innerZip.readBytesBounded(MAX_MANIFEST_BYTES)
                             manifestBlock = AndroidManifestBlock.load(ByteArrayInputStream(manifestBytes))
                         } else if (innerEntry.name.startsWith("lib/")) {
                             val parts = innerEntry.name.split("/")

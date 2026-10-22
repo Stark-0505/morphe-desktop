@@ -64,6 +64,8 @@ fun SettingsDialog(
     onThemeChange: (ThemePreference) -> Unit,
     autoCleanupTempFiles: Boolean,
     onAutoCleanupChange: (Boolean) -> Unit,
+    saveOriginalApks: Boolean,
+    onSaveOriginalApksChange: (Boolean) -> Unit,
     defaultOutputDirectory: String?,
     onDefaultOutputDirectoryChange: (String?) -> Unit,
     useExpertMode: Boolean,
@@ -231,6 +233,8 @@ fun SettingsDialog(
                             "System" -> SystemTab(
                                 autoCleanupTempFiles = autoCleanupTempFiles,
                                 onAutoCleanupChange = onAutoCleanupChange,
+                                saveOriginalApks = saveOriginalApks,
+                                onSaveOriginalApksChange = onSaveOriginalApksChange,
                                 updateChannelPreference = updateChannelPreference,
                                 onUpdateChannelChange = onUpdateChannelChange,
                                 defaultOutputDirectory = defaultOutputDirectory,
@@ -289,6 +293,7 @@ fun SettingsDialogHost() {
 
     var customAccentColorArgb by LocalCustomAccentColor.current
     var autoCleanupTempFiles by remember { mutableStateOf(true) }
+    var saveOriginalApks by remember { mutableStateOf(true) }
     var defaultOutputDirectory by remember { mutableStateOf<String?>(null) }
     var keystorePath by remember { mutableStateOf<String?>(null) }
     var keystorePassword by remember { mutableStateOf<String?>(null) }
@@ -301,6 +306,7 @@ fun SettingsDialogHost() {
     var disableStockLinksAfterInstall by remember { mutableStateOf(false) }
     var developerOptions by remember { mutableStateOf(false) }
     var gitHubPat by remember { mutableStateOf("") }
+    var savedGitHubPat by remember { mutableStateOf("") }
 
     suspend fun loadSettings() {
         val (config, engineConfig, channel) = withContext(Dispatchers.IO) {
@@ -311,6 +317,7 @@ fun SettingsDialogHost() {
             Triple(cfg, engCfg, ch)
         }
         autoCleanupTempFiles = engineConfig.autoCleanupTempFiles
+        saveOriginalApks = config.saveOriginalApks
         defaultOutputDirectory = engineConfig.resolvedDefaultOutputDirectory()?.absolutePath
         keystorePath = engineConfig.resolvedKeystorePath()?.absolutePath
         keystorePassword = engineConfig.keystorePassword
@@ -322,6 +329,7 @@ fun SettingsDialogHost() {
         disableStockLinksAfterInstall = engineConfig.disableStockLinksAfterInstall
         developerOptions = engineConfig.developerOptions
         gitHubPat = engineConfig.gitHubPat
+        savedGitHubPat = engineConfig.gitHubPat
         updateChannelPreference = channel
     }
 
@@ -345,6 +353,14 @@ fun SettingsDialogHost() {
                     engineConfigRepository.setAutoCleanupTempFiles(enabled)
                 }
             },
+            saveOriginalApks = saveOriginalApks,
+            onSaveOriginalApksChange = { enabled ->
+                saveOriginalApks = enabled
+                scope.launch {
+                    // Show only what is really stored: if the write fails the switch goes back.
+                    if (!configRepository.setSaveOriginalApks(enabled)) saveOriginalApks = !enabled
+                }
+            },
             defaultOutputDirectory = defaultOutputDirectory,
             onDefaultOutputDirectoryChange = { path ->
                 defaultOutputDirectory = path
@@ -361,6 +377,13 @@ fun SettingsDialogHost() {
             },
             onDismiss = {
                 showSettingsDialog = false
+                // Persisted once, trimmed, on close — not on every keystroke, which would
+                // rewrite the config file per character and could store stray whitespace.
+                val normalizedPat = gitHubPat.trim()
+                if (normalizedPat != savedGitHubPat) {
+                    savedGitHubPat = normalizedPat
+                    scope.launch { engineConfigRepository.setGitHubPat(normalizedPat) }
+                }
                 onDismiss()
             },
             isPatching = isPatching,
@@ -423,7 +446,6 @@ fun SettingsDialogHost() {
             gitHubPat = gitHubPat,
             onGitHubPatChange = { pat ->
                 gitHubPat = pat
-                scope.launch { engineConfigRepository.setGitHubPat(pat) }
             },
             customAccentColorArgb = customAccentColorArgb,
             onCustomAccentColorChange = {

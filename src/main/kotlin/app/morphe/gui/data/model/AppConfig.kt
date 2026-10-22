@@ -44,8 +44,29 @@ data class AppConfig(
     /** Release tracking preference per patch source ID. */
     val sourceVersionPrefs: Map<String, SourceVersionPref> = emptyMap(),
     val sourceChannelFlagsSeeded: Boolean = false,
-    val cardFills: Map<String, MorpheFill> = emptyMap(),
+    /**
+     * The universal app card color mode, as an [AppCardColorMode] name. Stored as a string, like
+     * [themePreference], so an unreadable value degrades to the default instead of failing the
+     * whole config load. Read it through [getAppCardColorMode].
+     */
+    val appCardColorMode: String = AppCardColorMode.DEFAULT.name,
+    /**
+     * The four app card colors the editor keeps, encoded by
+     * [AppCardColorDefaults.encodeColorValues]. Kept for every mode, so switching modes and back
+     * does not discard what was picked. Read it through [getAppCardColorValues].
+     */
+    val customAppCardColors: String = "",
+    /**
+     * LEGACY global card fill, from before app card colors became a semantic configuration.
+     * Migrated once into [appCardColorMode] / [customAppCardColors] by
+     * [ConfigRepository.migrateCardFills], then left alone. Do not read directly.
+     */
     val globalCardFill: MorpheFill? = null,
+    /**
+     * LEGACY per-app card fills. App card colors are one universal configuration now, so these
+     * have nowhere to migrate to and are dropped on the first save. Do not read.
+     */
+    val cardFills: Map<String, MorpheFill> = emptyMap(),
     val useSharpCorners: Boolean = false,
     val groupPatchesByCategory: Boolean = true,
     val homeAppSortMode: String = "RECOMMENDED",
@@ -64,6 +85,23 @@ data class AppConfig(
     val multiSourceHintDismissed: Boolean = false,
     // Last viewed apps filter tab.
     val homeAppListFilter: String = "ALL",
+    // Home cards the user has hidden, by HomeAppItem id (the package a build
+    // installs under, so a renamed build can be hidden without hiding the app it
+    // came from). Hidden cards stay in the history and are reachable through the
+    // hidden-apps toggle. Stored as a list so the config stays plain JSON.
+    val hiddenHomeApps: List<String> = emptyList(),
+    // Supported app versions the user turned down, keyed by original package.
+    // The rebuild offer stays away for that version only, so a later one brings
+    // it back on its own. See HomeViewModel.ignoreSupportedVersion.
+    val ignoredSupportedVersions: Map<String, String> = emptyMap(),
+    // Whether a successful patch moves the pre-patch (original) APK into Morphe's
+    // managed storage, where it becomes the canonical input for later repatches
+    // instead of the file the user picked — see OriginalApkRepository. When OFF the
+    // user's file is left where it is. Default ON, matching morphe-manager's own
+    // default: the archive only grows with actual use (one entry per package,
+    // replaced on a new version), and losing the ability to repatch without
+    // re-locating the original file is a worse default than the disk cost.
+    val saveOriginalApks: Boolean = true,
 ) {
 
     fun getUpdateChannelPreference(): UpdateChannelPreference? {
@@ -74,6 +112,17 @@ data class AppConfig(
             null
         }
     }
+    /** The stored app card color mode, or [AppCardColorMode.DEFAULT] when it does not name one. */
+    fun getAppCardColorMode(): AppCardColorMode = try {
+        AppCardColorMode.valueOf(appCardColorMode)
+    } catch (e: IllegalArgumentException) {
+        AppCardColorMode.DEFAULT
+    }
+
+    /** The stored app card colors, decoded. Blank decodes to all-empty, which means "unset". */
+    fun getAppCardColorValues(): AppCardColorValues =
+        AppCardColorDefaults.decodeColorValues(customAppCardColors)
+
     fun getThemePreference(): ThemePreference {
         if (themePreference == "PURE_BLACK") return ThemePreference.AMOLED
         return try {

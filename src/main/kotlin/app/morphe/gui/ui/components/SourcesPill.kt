@@ -22,26 +22,39 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
-import app.morphe.engine.patches.PatchResolver.Channel
+import androidx.compose.ui.unit.sp
 import app.morphe.gui.data.model.PatchSource
 import app.morphe.gui.ui.icons.MorpheIcons
 import app.morphe.gui.ui.theme.MorpheMotion
 import app.morphe.gui.ui.theme.MorpheTheme
-import app.morphe.gui.ui.theme.channelColor
 import app.morphe.morphe_desktop.generated.resources.*
 import org.jetbrains.compose.resources.pluralStringResource
 import org.jetbrains.compose.resources.stringResource
 
-/** Per-source LED state surfaced in [SourcesCountPill]. */
-enum class SourceLedState { DISABLED, STABLE_LATEST, STABLE_OLDER, DEV_LATEST, DEV_OLDER, LOCAL, ERROR }
+private val AvatarSize = 22.dp
+private val AvatarRing = 1.5.dp
+private val AvatarSlot = AvatarSize + AvatarRing * 2
+private val AvatarStep = AvatarSlot - 7.dp
+private const val MAX_VISIBLE_AVATARS = 5
 
-/** Header pill displaying configured source count, status indicators, and an optional action. */
+/**
+ * Header pill showing source count + overlapping source avatars + trailing "+".
+ * Used in expert mode (clickable, opens [SourceManagementSheet]) and in Quick
+ * Patch mode (purely informational, pass `onClick = null`).
+ *
+ * Disabled sources are dimmed and sources in [failedSourceIds] get an error ring.
+ */
 @Composable
 fun SourcesCountPill(
-    sourceStates: List<SourceLedState>,
+    sources: List<PatchSource>,
+    failedSourceIds: Set<String> = emptySet(),
+    modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
 ) {
     val shapes = MorpheTheme.shapes
@@ -50,10 +63,10 @@ fun SourcesCountPill(
     val (containerColor, borderColor) = rememberPillColors()
     
     val tint = MaterialTheme.colorScheme.onSurfaceVariant
-    val count = sourceStates.size.coerceAtLeast(1)
+    val count = sources.size.coerceAtLeast(1)
     val label = pluralStringResource(Res.plurals.count_sources, count, count)
     Row(
-        modifier = Modifier
+        modifier = modifier
             .height(dimens.controlHeight)
             .clip(shapes.small)
             .background(containerColor)
@@ -73,14 +86,13 @@ fun SourcesCountPill(
             style = MorpheTheme.typography.labelMedium,
             color = tint
         )
-        if (sourceStates.isNotEmpty()) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                sourceStates.forEach { state -> SourceLed(state = state) }
-            }
-        }
+        // Weighted so the label and "+" are measured first and the avatars get what is left.
+        SourceAvatarStack(
+            sources = sources,
+            failedSourceIds = failedSourceIds,
+            ringColor = containerColor.compositeOver(MaterialTheme.colorScheme.background),
+            modifier = Modifier.weight(1f, fill = false),
+        )
         if (interactive) {
             Icon(
                 imageVector = MorpheIcons.Add,
@@ -93,41 +105,71 @@ fun SourcesCountPill(
 }
 
 @Composable
-private fun SourceLed(state: SourceLedState) {
-    val color = when (state) {
-        SourceLedState.DISABLED -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
-        SourceLedState.STABLE_LATEST -> channelColor(Channel.STABLE_LATEST)
-        SourceLedState.STABLE_OLDER -> channelColor(Channel.STABLE_OLDER)
-        SourceLedState.DEV_LATEST -> channelColor(Channel.DEV_LATEST)
-        SourceLedState.DEV_OLDER -> channelColor(Channel.DEV_OLDER)
-        SourceLedState.LOCAL -> channelColor(Channel.LOCAL)
-        SourceLedState.ERROR -> MaterialTheme.colorScheme.error
+private fun SourceAvatarStack(
+    sources: List<PatchSource>,
+    failedSourceIds: Set<String>,
+    ringColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    // Capacity comes from the width this slot is actually given, so narrow windows drop
+    // avatars into the "+N" badge instead of clipping them.
+    BoxWithConstraints(modifier) {
+        val slots = if (maxWidth < AvatarSlot) 0 else ((maxWidth - AvatarSlot) / AvatarStep).toInt() + 1
+        val visible = visibleAvatarCount(sources.size, slots)
+        if (visible > 0) {
+            // Decorative: the pill's count label already tells screen readers how many sources exist.
+            Row(
+                modifier = Modifier.clearAndSetSemantics {},
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AvatarStep - AvatarSlot),
+            ) {
+                sources.take(visible).forEach { source ->
+                    key(source.id) {
+                        val ring = if (source.enabled && source.id in failedSourceIds) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            ringColor
+                        }
+                        Box(Modifier.size(AvatarSlot).background(ring, CircleShape).padding(AvatarRing)) {
+                            SourceAvatar(
+                                source = source,
+                                size = AvatarSize,
+                                modifier = Modifier.alpha(if (source.enabled) 1f else 0.4f),
+                            )
+                        }
+                    }
+                }
+                val hidden = sources.size - visible
+                if (hidden > 0) {
+                    Box(
+                        modifier = Modifier
+                            .size(AvatarSlot)
+                            .background(ringColor, CircleShape)
+                            .padding(AvatarRing)
+                            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "+$hidden",
+                            style = MorpheTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
+                }
+            }
+        }
     }
-    Box(
-        modifier = Modifier
-            .size(6.dp)
-            .background(color, shape = CircleShape)
-    )
 }
 
-/** Maps a [PatchSource] and resolved channel to a [SourceLedState]. */
-fun sourceLedState(
-    source: PatchSource,
-    channel: Channel?,
-    hasError: Boolean = false,
-): SourceLedState {
-    if (!source.enabled) return SourceLedState.DISABLED
-    // Errors take precedence over release channel state.
-    if (hasError) return SourceLedState.ERROR
-    return when (channel) {
-        Channel.STABLE_LATEST -> SourceLedState.STABLE_LATEST
-        Channel.STABLE_OLDER -> SourceLedState.STABLE_OLDER
-        Channel.DEV_LATEST -> SourceLedState.DEV_LATEST
-        Channel.DEV_OLDER -> SourceLedState.DEV_OLDER
-        Channel.LOCAL -> SourceLedState.LOCAL
-        null, Channel.UNKNOWN -> SourceLedState.STABLE_LATEST
-    }
-}
+/**
+ * How many avatars to draw for [total] sources when [slots] avatar-sized slots fit. When some
+ * sources are hidden, one slot is given to the "+N" badge.
+ */
+internal fun visibleAvatarCount(total: Int, slots: Int): Int =
+    if (total <= minOf(slots, MAX_VISIBLE_AVATARS)) total
+    else (minOf(slots, MAX_VISIBLE_AVATARS + 1) - 1).coerceAtLeast(0)
 
 /** Indicator pill displayed while patch manifests and releases are loading. */
 @Composable

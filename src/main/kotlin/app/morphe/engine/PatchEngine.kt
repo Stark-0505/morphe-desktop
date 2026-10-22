@@ -8,7 +8,6 @@
 
 package app.morphe.engine
 
-import app.morphe.engine.apk.ApkInspector
 import app.morphe.engine.apk.ApkOutputNaming
 import app.morphe.engine.apk.BundleFormats
 import app.morphe.engine.model.PatchedAppRecord
@@ -23,7 +22,6 @@ import app.morphe.engine.options.updateOptionsFileFromSnapshots
 import app.morphe.engine.options.writePatchBundles
 import app.morphe.engine.patches.PatchBundleLoader
 import app.morphe.engine.patches.supportedVersionsFor
-import app.morphe.engine.util.FileChecksum
 import app.morphe.engine.util.KeystoreImporter
 import app.morphe.engine.util.Logger
 import app.morphe.engine.util.signWithLegacyFallback
@@ -85,6 +83,14 @@ object PatchEngine {
         val patchSelectionByBundle: Map<String, Set<String>> = emptyMap(),
         val patchOptionValues: Map<String, String> = emptyMap(),
         val sourcesSnapshot: List<PatchedAppRecord.PatchedSourceSnapshot> = emptyList(),
+        /** Hex accent for the app's card; blank/null = none. */
+        val appIconColorHex: String? = null,
+        /**
+         * When set, the original APK is archived here and the user's copy discarded after the
+         * record is durable (see [PatchHistoryRecorder]). Null — the CLI's case — leaves the
+         * input file untouched and the record pointing at it.
+         */
+        val originalApkRepository: OriginalApkRepository? = null,
     )
 
     data class Config(
@@ -384,12 +390,11 @@ object PatchEngine {
                         val patchesList = lb.patches.toList()
                         val resolvedScopeOptions = scope.patchOptions.toMutableMap()
                         scope.patchOptionIndices.forEach { (idx, opts) ->
-                            if (idx in patchesList.indices) {
-                                val name = patchesList[idx].name
-                                if (name != null) {
-                                    val existing = resolvedScopeOptions[name] ?: emptyMap()
-                                    resolvedScopeOptions[name] = existing + opts
-                                }
+                            val patch = requirePatchAt(patchesList, idx, lb.sourceFile.name)
+                            val name = patch.name
+                            if (name != null) {
+                                val existing = resolvedScopeOptions[name] ?: emptyMap()
+                                resolvedScopeOptions[name] = existing + opts
                             }
                         }
 
@@ -625,36 +630,17 @@ object PatchEngine {
 
                 val isSuccess = !config.failOnError || failedPatches.isEmpty()
 
+                // 10. Archive the original and record to PatchedAppStore
                 var historyRecord: PatchedAppRecord? = null
                 if (config.recordHistory && isSuccess) {
-                    try {
-                        val (sha, size) = FileChecksum.fingerprintOrNull(finalOutputApk.absolutePath)
-                        val manifest = runCatching { ApkInspector.inspect(finalOutputApk) }.getOrNull()
-                        val record = PatchedAppRecord(
-                            packageName = config.historyMetadata?.originalPackageName?.takeIf { it.isNotBlank() } ?: packageName,
-                            currentPackageName = manifest?.packageName,
-                            displayName = config.appDisplayName?.takeIf { it.isNotBlank() }
-                                ?: config.historyMetadata?.displayName?.takeIf { it.isNotBlank() }
-                                ?: packageName,
-                            apkVersion = manifest?.versionName?.takeIf { it.isNotBlank() } ?: packageVersion,
-                            apkVersionCode = manifest?.versionCode,
-                            inputApkPath = config.inputApk.absolutePath,
-                            outputApkPath = finalOutputApk.absolutePath,
-                            outputApkSha256 = sha,
-                            outputApkSize = if (size > 0L) size else finalOutputApk.length(),
-                            patchSelectionByBundle = config.historyMetadata?.patchSelectionByBundle ?: emptyMap(),
-                            patchOptionValues = config.historyMetadata?.patchOptionValues ?: emptyMap(),
-                            sourcesSnapshot = config.historyMetadata?.sourcesSnapshot ?: emptyList(),
-                            patchedAt = System.currentTimeMillis(),
-                            patchedWithMorpheVersion = UpdateChecker.currentVersion() ?: "unknown",
-                        )
-                        PatchedAppStore.shared.upsert(record)
-                        historyRecord = record
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Logger.warn("Failed to record patched app to store: ${e.message ?: e::class.simpleName}")
-                    }
+                    historyRecord = PatchHistoryRecorder.record(
+                        packageName = packageName,
+                        packageVersion = packageVersion,
+                        displayName = config.appDisplayName,
+                        inputApk = config.inputApk,
+                        outputApk = finalOutputApk,
+                        metadata = config.historyMetadata,
+                    ).getOrNull()
                 }
 
                 val failureReason = if (isSuccess) null else {
@@ -818,3 +804,21 @@ object PatchEngine {
 
     private class PatchFailedException(message: String, cause: Throwable) : Exception(message, cause)
 }
+
+/**
+ * The patch at a user-supplied [index] (the CLI's `--ei`) into [bundleName]'s patch list.
+ *
+ * The index is unvalidated until here. Silently skipping an out-of-range value would drop the
+ * user's options with no hint of which index or bundle was wrong, so it fails loudly instead,
+ * naming both and the valid range.
+ */
+internal fun <T> requirePatchAt(patches: List<T>, index: Int, bundleName: String): T =
+    patches.getOrNull(index)
+        ?: throw IllegalArgumentException(
+            "Patch index $index is out of range for bundle '$bundleName' " +
+                if (patches.isEmpty()) {
+                    "(it has no patches)"
+                } else {
+                    "(it has ${patches.size} patch(es), valid indices 0..${patches.size - 1})"
+                },
+        )

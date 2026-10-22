@@ -44,14 +44,6 @@
         <item quantity="one">%1$d yamaq</item>
         <item quantity="other">%1$d yamaq</item>
     </plurals>
-    <plurals name="settings_app_cards_override_count">
-        <item quantity="one">%1$d kart bunu üstələyir</item>
-        <item quantity="other">%1$d kart bunu üstələyir</item>
-    </plurals>
-    <plurals name="home_detail_download_bundles">
-        <item quantity="one">%1$d paketi endirin</item>
-        <item quantity="other">%1$d paketi endirin</item>
-    </plurals>
     <plurals name="patching_graph_cpu_cores_detail">
         <item quantity="one">%1$d nüvə</item>
         <item quantity="other">%1$d nüvə</item>

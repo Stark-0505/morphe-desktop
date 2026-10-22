@@ -47,6 +47,8 @@ import app.morphe.gui.util.currentLocale
 import app.morphe.gui.util.resolveStepName
 import app.morphe.gui.util.sourceChannelMap
 import app.morphe.gui.util.sourceErrorMap
+import app.morphe.gui.util.sourcePatchCountMap
+import app.morphe.gui.util.sourceUpdateAvailableMap
 import app.morphe.gui.util.sourceVersionMap
 import app.morphe.morphe_desktop.generated.resources.*
 import java.io.File
@@ -129,6 +131,8 @@ fun QuickPatchContent(viewModel: QuickPatchViewModel) {
             sourceVersions = snapshot.sourceVersionMap(),
             sourceChannels = snapshot.sourceChannelMap(),
             sourceErrors = snapshot.sourceErrorMap(),
+            sourcePatchCounts = snapshot.sourcePatchCountMap(),
+            sourceUpdateAvailable = snapshot.sourceUpdateAvailableMap(),
             isLoading = uiState.isLoadingPatches,
             mode = SourceSheetMode.SINGLE_SELECT,
             activeSourceId = activeSourceId,
@@ -141,7 +145,6 @@ fun QuickPatchContent(viewModel: QuickPatchViewModel) {
             onEdit = { src -> pickerScope.launch { patchSourceManager.updateSource(src) } },
             onRemove = { id -> pickerScope.launch { patchSourceManager.removeSource(id) } },
             onReorder = { orderedIds -> pickerScope.launch { patchSourceManager.reorderSources(orderedIds) } },
-            onOpenPatches = { /* unused in SINGLE_SELECT mode */ },
             onDismiss = { showSourcePicker = false },
             onRefresh = { viewModel.retryLoadPatches() },
             enabled = uiState.phase != QuickPatchPhase.DOWNLOADING &&

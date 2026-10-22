@@ -26,9 +26,8 @@ import app.morphe.gui.ui.theme.MorpheTheme
 import app.morphe.gui.ui.theme.panelFill
 import app.morphe.gui.ui.screens.result.formatFileSize
 import app.morphe.morphe_desktop.generated.resources.*
-import java.awt.Desktop
+import app.morphe.gui.util.revealInFileManager
 import java.io.File
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.stringResource
 
@@ -102,16 +101,7 @@ internal fun OutputFileCard(
                     variant = MorpheButtonVariant.OUTLINED,
                     size = MorpheButtonSize.DEFAULT,
                     modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        scope.launch(Dispatchers.IO) {
-                            try {
-                                val folder = outputFile.parentFile
-                                if (folder != null && Desktop.isDesktopSupported()) {
-                                    Desktop.getDesktop().open(folder)
-                                }
-                            } catch (_: Exception) {}
-                        }
-                    }
+                    onClick = { scope.launch { revealInFileManager(outputFile.parentFile) } }
                 )
             }
         }

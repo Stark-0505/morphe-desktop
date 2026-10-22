@@ -33,12 +33,6 @@
     <plurals name="patch_selection_group_patch_count">
         <item quantity="other">%1$d 個のパッチ</item>
     </plurals>
-    <plurals name="settings_app_cards_override_count">
-        <item quantity="other">%1$d 個のカードがこの設定を上書きします</item>
-    </plurals>
-    <plurals name="home_detail_download_bundles">
-        <item quantity="other">バンドルを %1$d 個ダウンロード</item>
-    </plurals>
     <plurals name="patching_graph_cpu_cores_detail">
         <item quantity="other">%1$d コア</item>
     </plurals>

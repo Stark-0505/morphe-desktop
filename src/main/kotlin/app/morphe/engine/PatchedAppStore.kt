@@ -6,6 +6,7 @@
 package app.morphe.engine
 
 import app.morphe.engine.model.PatchedAppRecord
+import app.morphe.engine.util.AtomicFiles
 import app.morphe.engine.util.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -17,10 +18,28 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
+import java.io.IOException
 
-/** Thread-safe persistent JSON store for [PatchedAppRecord] history. */
+/**
+ * Persistent store for [PatchedAppRecord]s — the patched-app history shared by
+ * the CLI and GUI (see `patched-app-recall-plan.md`).
+ *
+ * Lives in the engine layer (not GUI) so **both** pipelines can record into one
+ * file: `morphe-data/patched-apps.json`. Reads are cached in memory; writes go
+ * through a [Mutex] (in-process safety) and are atomic (temp file + move) so a
+ * crash mid-write can't corrupt the history.
+ *
+ * Records are keyed by [PatchedAppRecord.trackingKey], not by package name, so
+ * several builds of one app — the app's own install and any copies of it — can
+ * be tracked side by side instead of overwriting each other.
+ *
+ * Writes have a hard success/failure contract: [upsert] and [delete] throw
+ * [IOException] when the change could not be persisted, leaving the in-memory
+ * state and [changes] untouched. A return therefore always means "on disk".
+ *
+ * The [file] is injectable for testing; production code uses the default under
+ * [MorpheData.root].
+ */
 class PatchedAppStore(
     private val file: File = File(MorpheData.root, FILE_NAME),
 ) {
@@ -43,25 +62,35 @@ class PatchedAppStore(
         mutex.withLock { load() }
     }
 
-    /** Returns the record for [packageName], or null if not found. */
-    suspend fun get(packageName: String): PatchedAppRecord? = withContext(Dispatchers.IO) {
-        mutex.withLock { load().firstOrNull { it.packageName == packageName } }
+    /** The record filed under [trackingKey], or null when there is none. */
+    suspend fun get(trackingKey: String): PatchedAppRecord? = withContext(Dispatchers.IO) {
+        mutex.withLock { load().firstOrNull { it.trackingKey == trackingKey } }
     }
 
-    /** Inserts or updates [record] for its package. */
+    /**
+     * Insert [record], replacing any existing record with the same tracking key.
+     * @throws IOException if the history could not be persisted.
+     */
+    @Throws(IOException::class)
     suspend fun upsert(record: PatchedAppRecord): Unit = withContext(Dispatchers.IO) {
+        val stored = record.withResolvedId()
         mutex.withLock {
-            val others = load().filterNot { it.packageName == record.packageName }
-            persist(listOf(record) + others)
+            val others = load().filterNot { it.trackingKey == stored.trackingKey }
+            persist(listOf(stored) + others)
         }
         _changes.tryEmit(Unit)
     }
 
-    /** Deletes the record for [packageName] if present. */
-    suspend fun delete(packageName: String): Unit = withContext(Dispatchers.IO) {
+    /**
+     * Remove the record filed under [trackingKey] if present.
+     * @throws IOException if the history could not be persisted.
+     */
+    @Throws(IOException::class)
+    suspend fun delete(trackingKey: String): Unit = withContext(Dispatchers.IO) {
         val changed = mutex.withLock {
-            val remaining = load().filterNot { it.packageName == packageName }
-            if (remaining.size != cache?.size) {
+            val current = load()
+            val remaining = current.filterNot { it.trackingKey == trackingKey }
+            if (remaining.size != current.size) {
                 persist(remaining)
                 true
             } else {
@@ -75,10 +104,17 @@ class PatchedAppStore(
         cache?.let { return it }
         val records = if (file.exists()) {
             try {
-                json.decodeFromString<StoreFile>(file.readText()).records
+                val stored = json.decodeFromString<StoreFile>(file.readText())
+                migrate(stored)
             } catch (e: Exception) {
-                // Start with empty history if the file is corrupted or unreadable.
-                Logger.warn("Could not read patched-app history (${e.message}); starting empty")
+                // Corrupt/incompatible file: keep the user able to patch by starting
+                // empty, but move the bad file aside first so the next write can't
+                // destroy whatever is still recoverable in it.
+                val preserved = AtomicFiles.quarantine(file)
+                Logger.warn(
+                    "Could not read patched-app history (${e.message}); " +
+                        "preserved it as ${preserved.name} and starting empty"
+                )
                 emptyList()
             }
         } else {
@@ -88,26 +124,40 @@ class PatchedAppStore(
         return records
     }
 
-    private fun persist(records: List<PatchedAppRecord>) {
-        try {
-            file.parentFile?.mkdirs()
-            val content = json.encodeToString(StoreFile.serializer(), StoreFile(SCHEMA_VERSION, records))
-            // Write to a temporary file before moving to prevent corrupted writes.
-            val tmp = File(file.parentFile, "${file.name}.tmp")
-            tmp.writeText(content)
-            try {
-                Files.move(
-                    tmp.toPath(), file.toPath(),
-                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE,
-                )
-            } catch (_: Exception) {
-                // Fall back if ATOMIC_MOVE is unsupported on the current filesystem.
-                Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
-            cache = records
-        } catch (e: Exception) {
-            Logger.warn("Failed to write patched-app history: ${e.message}")
+    /**
+     * Brings a stored file up to [SCHEMA_VERSION] in memory. Nothing is written
+     * here: the migrated shape lands on disk with the next [persist], so a read
+     * alone can never lose a record it failed to understand.
+     *
+     * v1 → v2 keyed records by package name, which allowed only one build per
+     * app. Each record is filed under the package it installs as, which is the
+     * identity v1 records already had, so no v1 history is dropped or merged.
+     * Two v1 records could only collide here if the same file already held
+     * duplicates, and the first (most recent) wins, matching what v1 itself
+     * returned from `get`.
+     */
+    private fun migrate(stored: StoreFile): List<PatchedAppRecord> {
+        // A file written by a newer Morphe may carry fields this version would drop on its next
+        // save. Throwing sends it through the quarantine path (preserved, never overwritten).
+        check(stored.version <= SCHEMA_VERSION) { "unsupported schema version ${stored.version}" }
+        if (stored.version >= SCHEMA_VERSION && stored.records.all { it.id.isNotBlank() }) {
+            return stored.records
         }
+        val migrated = stored.records
+            .map { it.withResolvedId() }
+            .distinctBy { it.trackingKey }
+        val dropped = stored.records.size - migrated.size
+        if (dropped > 0) {
+            Logger.warn("Patched-app history held $dropped duplicate record(s); kept the newest of each")
+        }
+        Logger.info("Migrated patched-app history from schema v${stored.version} to v$SCHEMA_VERSION")
+        return migrated
+    }
+
+    /** Writes [records] durably; the cache only advances once they are on disk. */
+    private fun persist(records: List<PatchedAppRecord>) {
+        AtomicFiles.write(file, json.encodeToString(StoreFile.serializer(), StoreFile(SCHEMA_VERSION, records)))
+        cache = records
     }
 
     @Serializable
@@ -119,10 +169,14 @@ class PatchedAppStore(
     companion object {
         const val FILE_NAME = "patched-apps.json"
 
-        /** Current schema version of the persistent records file. */
-        const val SCHEMA_VERSION = 1
+        /** Bump when the on-disk shape changes incompatibly; add a migration in [migrate]. */
+        const val SCHEMA_VERSION = 2
 
         /** Shared singleton instance using the default storage location. */
         val shared: PatchedAppStore by lazy { PatchedAppStore() }
+
+        /** [this] with [PatchedAppRecord.id] filled in, which is what the store files it under. */
+        private fun PatchedAppRecord.withResolvedId(): PatchedAppRecord =
+            if (id.isNotBlank()) this else copy(id = installedPackageName)
     }
 }

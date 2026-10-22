@@ -30,6 +30,8 @@ import org.jetbrains.compose.resources.stringResource
 internal fun SystemTab(
     autoCleanupTempFiles: Boolean,
     onAutoCleanupChange: (Boolean) -> Unit,
+    saveOriginalApks: Boolean,
+    onSaveOriginalApksChange: (Boolean) -> Unit,
     updateChannelPreference: UpdateChannelPreference,
     onUpdateChannelChange: (UpdateChannelPreference) -> Unit,
     defaultOutputDirectory: String?,
@@ -50,6 +52,17 @@ internal fun SystemTab(
         onCheckedChange = onAutoCleanupChange,
         enabled = !isPatching,
         icon = MorpheIcons.DeleteSweep
+    )
+
+    SettingsDivider(borderColor)
+
+    SettingToggleRow(
+        label = stringResource(Res.string.settings_toggle_save_originals_label),
+        description = stringResource(Res.string.settings_toggle_save_originals_desc),
+        checked = saveOriginalApks,
+        onCheckedChange = onSaveOriginalApksChange,
+        enabled = !isPatching,
+        icon = MorpheIcons.Save
     )
 
     SettingsDivider(borderColor)

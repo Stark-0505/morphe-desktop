@@ -13,6 +13,7 @@ import app.morphe.engine.util.Logger
 import io.ktor.client.request.headers
 import io.ktor.http.HttpHeaders
 import java.io.File
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -38,6 +39,8 @@ open class GitHubPatchSource(
             }
             Logger.info("GitHub: fetched ${releases.size} releases from $repoPath")
             Result.success(releases)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Logger.warn("GitHub releases fetch error for $repoPath: ${e.message}")
             Result.failure(e)
@@ -52,6 +55,8 @@ open class GitHubPatchSource(
             val bundle: PatchesBundle = http.request(url)
             Logger.info("GitHub: bundle ($branch) → v${bundle.version} @ ${bundle.downloadUrl}")
             Result.success(bundle.toRelease(prerelease))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val reason = (e as? HttpService.HttpException)?.status?.toString() ?: (e.message ?: "unknown error")
             Logger.info("GitHub: no usable patches-bundle.json ($branch) for $repoPath ($reason); falling back to releases API")
@@ -71,6 +76,8 @@ open class GitHubPatchSource(
             }
             Logger.info("GitHub: wrote ${file.length()} bytes to ${file.absolutePath}")
             Result.success(file)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }

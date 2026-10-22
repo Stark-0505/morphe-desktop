@@ -9,11 +9,13 @@ import app.morphe.library.installation.installer.AdbRootInstaller
 import app.morphe.library.installation.installer.DeviceNotFoundException
 import app.morphe.library.installation.installer.Installer
 import app.morphe.library.installation.installer.RootInstallerResult
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import java.time.LocalDateTime
+import java.time.ZoneId
 
 /** Manages Android Debug Bridge (ADB) operations. */
 class AdbManager {
@@ -113,7 +115,7 @@ class AdbManager {
                 .redirectErrorStream(true)
                 .start()
 
-            val result = process.inputStream.bufferedReader().readText().trim()
+            val result = process.inputStream.bufferedReader().use { it.readText() }.trim()
             process.waitFor()
 
             if (process.exitValue() == 0 && result.isNotEmpty()) {
@@ -159,7 +161,7 @@ class AdbManager {
             val process = ProcessBuilder(adb, "start-server")
                 .redirectErrorStream(true)
                 .start()
-            process.inputStream.bufferedReader().readText() // drain so the child exits cleanly
+            process.inputStream.bufferedReader().use { it.readText() } // drain so the child exits cleanly
             val exitCode = process.waitFor()
             if (exitCode != 0) {
                 return@withContext Result.failure(
@@ -206,7 +208,7 @@ class AdbManager {
             val process = ProcessBuilder(adb, "kill-server")
                 .redirectErrorStream(true)
                 .start()
-            val output = process.inputStream.bufferedReader().readText()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
             val exitCode = process.waitFor()
             if (exitCode != 0) {
                 Logger.warn("adb kill-server exited with code $exitCode: $output")
@@ -246,7 +248,7 @@ class AdbManager {
                 .redirectErrorStream(true)
                 .start()
 
-            val output = process.inputStream.bufferedReader().readText()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
             val exitCode = process.waitFor()
 
             if (exitCode != 0) {
@@ -386,10 +388,12 @@ class AdbManager {
 
                 // Read output in real-time
                 val output = StringBuilder()
-                process.inputStream.bufferedReader().forEachLine { line ->
-                    output.appendLine(line)
-                    onProgress(line)
-                    Logger.debug("ADB: $line")
+                process.inputStream.bufferedReader().use { reader ->
+                    reader.forEachLine { line ->
+                        output.appendLine(line)
+                        onProgress(line)
+                        Logger.debug("ADB: $line")
+                    }
                 }
 
                 val exitCode = process.waitFor()
@@ -555,7 +559,7 @@ class AdbManager {
             val process = ProcessBuilder(adb, "-s", targetDeviceId, "uninstall", packageName)
                 .redirectErrorStream(true)
                 .start()
-            val output = process.inputStream.bufferedReader().readText().trim()
+            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
             val exitCode = process.waitFor()
             Logger.debug("uninstall $packageName on $targetDeviceId -> exit $exitCode: $output")
 
@@ -605,7 +609,7 @@ class AdbManager {
             val main = ProcessBuilder(adb, "-s", deviceId, "logcat", "-c")
                 .redirectErrorStream(true)
                 .start()
-            val mainOutput = main.inputStream.bufferedReader().readText()
+            val mainOutput = main.inputStream.bufferedReader().use { it.readText() }
             if (main.waitFor() != 0) {
                 return@withContext Result.failure(
                     AdbException(
@@ -620,7 +624,7 @@ class AdbManager {
                 val crash = ProcessBuilder(adb, "-s", deviceId, "logcat", "-b", "crash", "-c")
                     .redirectErrorStream(true)
                     .start()
-                crash.inputStream.bufferedReader().readText()
+                crash.inputStream.bufferedReader().use { it.readText() }
                 crash.waitFor()
             } catch (_: Exception) {}
 
@@ -746,7 +750,7 @@ class AdbManager {
                 val process = ProcessBuilder(listOf(adb, "-s", deviceId, "shell") + argv)
                     .redirectErrorStream(true)
                     .start()
-                val output = process.inputStream.bufferedReader().readText().trim()
+                val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
                 val exitCode = process.waitFor()
                 Logger.debug("ADB shell ${argv.joinToString(" ")} -> exit $exitCode${if (output.isNotBlank()) ": $output" else ""}")
                 if (exitCode != 0 ||
@@ -787,7 +791,7 @@ class AdbManager {
         try {
             val process = ProcessBuilder(adb, "-s", deviceId, "shell", "pm", "list", "packages")
                 .redirectErrorStream(true).start()
-            val out = process.inputStream.bufferedReader().readText()
+            val out = process.inputStream.bufferedReader().use { it.readText() }
             process.waitFor()
             if (process.exitValue() != 0) {
                 return@withContext Result.failure(
@@ -817,21 +821,98 @@ class AdbManager {
         }
     }
 
-    /** Returns installed version name and signing certificate ID for [pkg] on [deviceId]. */
-    suspend fun getInstalledPackageInfo(deviceId: String, pkg: String): Pair<String?, String?>? =
+    /**
+     * Package name to its APK's on-device install path, from `pm list packages -f` —
+     * one bulk call, same cost as [listInstalledPackages]. The path is worth having
+     * on top of the bare name: Android assigns each (re)install a freshly randomized
+     * install directory, so the path for a given package changes across essentially
+     * every install operation, including an in-place reinstall that leaves the
+     * package name, version, and even the signature looking unchanged. That makes it
+     * a cheap way to notice "something happened to this install" without paying for
+     * a `dumpsys package` — the actually expensive call — just to find out.
+     */
+    suspend fun listInstalledPackagesWithPaths(deviceId: String): Result<Map<String, String>> = withContext(Dispatchers.IO) {
+        val adb = findAdb() ?: return@withContext Result.failure(AdbException("ADB binary not found", AdbErrorCode.ADB_NOT_FOUND))
+        try {
+            val process = ProcessBuilder(adb, "-s", deviceId, "shell", "pm", "list", "packages", "-f")
+                .redirectErrorStream(true).start()
+            val out = process.inputStream.bufferedReader().use { it.readText() }
+            process.waitFor()
+            if (process.exitValue() != 0) return@withContext Result.failure(AdbException("Failed to list packages: exit code ${process.exitValue()}", AdbErrorCode.PM_LIST_PACKAGES_FAILED, listOf("exit code ${process.exitValue()}")))
+            // Each line: package:/data/app/~~hash==/pkg.name-hash==/base.apk=pkg.name
+            // The path may itself contain '=', so split on the LAST one only.
+            val packages = out.lineSequence()
+                .map { it.trim() }
+                .filter { it.startsWith("package:") }
+                .map { it.removePrefix("package:").trim() }
+                .filter { it.isNotBlank() }
+                .mapNotNull { line ->
+                    val split = line.lastIndexOf('=')
+                    if (split <= 0 || split == line.lastIndex) null
+                    else line.substring(split + 1) to line.substring(0, split)
+                }
+                .toMap()
+            Result.success(packages)
+        } catch (e: Exception) {
+            Result.failure(AdbException("Error listing packages: ${e.message ?: ""}", AdbErrorCode.PM_LIST_PACKAGES_FAILED, listOf(e.message ?: ""), cause = e))
+        }
+    }
+
+    /**
+     * Everything one `dumpsys package` call can say about [pkg] on [deviceId], or
+     * null when the package is not there to be dumped.
+     *
+     * One call rather than one per field: the resolver asks about every tracked
+     * app on every device change, and a second process per answer is what made
+     * that stall. Each field is best-effort — a device whose dumpsys format we do
+     * not recognise yields nulls rather than a failure, and the caller then says
+     * the check did not happen instead of implying it passed.
+     */
+    suspend fun getDevicePackageInfo(deviceId: String, pkg: String): DevicePackageInfo? =
         withContext(Dispatchers.IO) {
             val out = dumpsysPackage(deviceId, pkg) ?: return@withContext null
+            // dumpsys prints the block even for an absent package, but without the
+            // version line it carries nothing worth trusting
             val version = Regex("""versionName=(\S+)""").find(out)?.groupValues?.get(1)
-            val signatureId = SignatureIdentity.parseDeviceSignatureId(out)
-            version to signatureId
+            val versionCode = Regex("""versionCode=(\d+)""").find(out)?.groupValues?.get(1)?.toLongOrNull()
+            val apkPath = Regex("""codePath=(\S+)""").find(out)?.groupValues?.get(1)
+            val installer = Regex("""installerPackageName=(\S+)""").find(out)?.groupValues?.get(1)
+                ?.takeUnless { it == "null" }
+            val firstInstall = Regex("""firstInstallTime=(\S+ \S+)""").find(out)?.groupValues?.get(1)
+            DevicePackageInfo(
+                versionName = version,
+                versionCode = versionCode,
+                apkPath = apkPath,
+                installerPackage = installer,
+                firstInstallTime = parseDumpsysTime(firstInstall),
+                signatureId = SignatureIdentity.parseDeviceSignatureId(out),
+            )
         }
+
+    /**
+     * `dumpsys` prints install times as local `yyyy-MM-dd HH:mm:ss`. Parsed in the
+     * host's own zone, which is the closest thing to the device's that is available
+     * without a second call, and only ever compared against a generous tolerance.
+     */
+    private fun parseDumpsysTime(value: String?): Long? {
+        if (value.isNullOrBlank()) return null
+        return runCatching {
+            LocalDateTime.parse(value.trim().replace(' ', 'T'))
+                .atZone(ZoneId.systemDefault())
+                .toInstant()
+                .toEpochMilli()
+        }.getOrNull()
+    }
+
+    /** Installer packages Morphe itself attributes its installs to. */
+    fun morpheInstallerCandidates(): Set<String> = SPOOF_STORE_CANDIDATES.toSet()
 
     private suspend fun dumpsysPackage(deviceId: String, pkg: String): String? = withContext(Dispatchers.IO) {
         val adb = findAdb() ?: return@withContext null
         try {
             val process = ProcessBuilder(adb, "-s", deviceId, "shell", "dumpsys", "package", pkg)
                 .redirectErrorStream(true).start()
-            val out = process.inputStream.bufferedReader().readText()
+            val out = process.inputStream.bufferedReader().use { it.readText() }
             process.waitFor()
             out.ifBlank { null }
         } catch (_: Exception) {
@@ -886,7 +967,7 @@ class AdbManager {
             val process = ProcessBuilder(adbPath, "-s", deviceId, "shell", "getprop", "ro.product.model")
                 .redirectErrorStream(true)
                 .start()
-            val result = process.inputStream.bufferedReader().readText().trim()
+            val result = process.inputStream.bufferedReader().use { it.readText() }.trim()
             process.waitFor()
             if (process.exitValue() == 0 && result.isNotBlank()) result else null
         } catch (_: Exception) {
@@ -900,7 +981,7 @@ class AdbManager {
             val process = ProcessBuilder(adbPath, "-s", deviceId, "shell", "getprop", "ro.product.cpu.abi")
                 .redirectErrorStream(true)
                 .start()
-            val result = process.inputStream.bufferedReader().readText().trim()
+            val result = process.inputStream.bufferedReader().use { it.readText() }.trim()
             process.waitFor()
             if (process.exitValue() == 0 && result.isNotBlank()) result else null
         } catch (_: Exception) {
@@ -974,6 +1055,24 @@ class AdbManager {
         }
     }
 }
+
+/**
+ * What the device reports about one installed package. Every field is optional:
+ * dumpsys output varies by OEM and Android version, and a field that could not
+ * be read must not be mistaken for one that is absent.
+ */
+data class DevicePackageInfo(
+    val versionName: String?,
+    val versionCode: Long?,
+    /** Where the device keeps the installed APK, when it says. */
+    val apkPath: String?,
+    /** Who the system credits with the installation. */
+    val installerPackage: String?,
+    /** Epoch millis of the first install, when it could be parsed. */
+    val firstInstallTime: Long?,
+    /** Signing-certificate identity, comparable against Morphe's own keystores. */
+    val signatureId: String?,
+)
 
 data class AdbDevice(
     val id: String,

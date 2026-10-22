@@ -16,6 +16,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.dp
+import app.morphe.gui.data.model.PatchSource
 import app.morphe.gui.ui.components.MorpheBanner
 import app.morphe.gui.ui.components.MorpheBannerAction
 import app.morphe.gui.ui.components.MorpheBannerDismiss
@@ -23,7 +24,6 @@ import app.morphe.gui.ui.components.MorpheBannerText
 import app.morphe.gui.ui.components.MorpheBannerTone
 import app.morphe.gui.ui.components.OfflineBadge
 import app.morphe.gui.ui.components.PatchesLoadingIndicator
-import app.morphe.gui.ui.components.SourceLedState
 import app.morphe.gui.ui.components.SourcesCountPill
 import app.morphe.gui.ui.components.TopBarRow
 import app.morphe.gui.ui.components.rememberSymmetricPadding
@@ -42,7 +42,7 @@ internal fun HeaderBar(
     onRetry: () -> Unit,
     onUpdateChannelChanged: () -> Unit = {},
     onManageSourcesClick: () -> Unit = {},
-    sourceStates: List<SourceLedState> = emptyList(),
+    sources: List<PatchSource> = emptyList(),
 ) {
     val borderColor = MaterialTheme.colorScheme.outlineVariant
     val paddingState = rememberSymmetricPadding()
@@ -82,7 +82,9 @@ internal fun HeaderBar(
                     PatchesLoadingIndicator()
                 } else {
                     SourcesCountPill(
-                        sourceStates = sourceStates,
+                        sources = sources,
+                        failedSourceIds = uiState.failedSourceIds,
+                        modifier = Modifier.weight(1f, fill = false),
                         onClick = onManageSourcesClick,
                     )
                 }
@@ -144,6 +146,10 @@ internal fun SourcesFailedBanner(
         MorpheBannerDismiss(onClick = onDismiss)
     }
 }
+
+// SourcesCountPill, PatchesLoadingIndicator and OfflineBadge moved to
+// gui/ui/components/SourcesPill.kt for reuse across modes (Quick Patch uses
+// a non-clickable variant).
 
 @Composable
 internal fun BrandingSection(isCompact: Boolean = false) {

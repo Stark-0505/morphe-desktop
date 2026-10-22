@@ -70,6 +70,18 @@ fun isNewerVersion(current: String?, baseline: String?): Boolean {
     return compareVersions(current, baseline) > 0
 }
 
+/**
+ * [this] printed the way every version is printed in the UI: with one leading
+ * `v`, whether or not it arrived with one. A blank string stays blank, so a
+ * missing version reads as absent rather than as "v".
+ */
+fun String.withVersionPrefix(): String {
+    // Trimmed first: normalizeVersion strips the prefix before trimming, so padding in front of
+    // a "v" would otherwise defeat it and produce a doubled prefix.
+    val normalized = trim().normalizeVersion()
+    return if (normalized.isEmpty()) "" else "v$normalized"
+}
+
 fun String?.isDevTag(): Boolean {
     val tag = this ?: return false
     return tag.contains("dev", ignoreCase = true) ||

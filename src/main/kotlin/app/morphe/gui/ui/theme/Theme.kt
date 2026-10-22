@@ -5,6 +5,7 @@
 
 package app.morphe.gui.ui.theme
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,10 +18,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import app.morphe.gui.data.model.AppCardColorDefaults
+import app.morphe.gui.data.model.AppCardColorMode
+import app.morphe.gui.data.model.AppCardColorResolver
+import app.morphe.gui.data.model.AppCardColorValues
+import app.morphe.gui.util.toHexString
 
 object MorpheColors {
     val Blue = Color(0xFF3B7BF7)
@@ -178,6 +186,110 @@ object MorpheTheme {
         get() = LocalMorpheAlphas.current
 }
 
+/**
+ * Shared alpha values for a border or fill drawn in a tone or accent color —
+ * a banner, a notice, a hero panel, a status chip — rather than in a flat
+ * Material color role, which already carries its own contrast from the
+ * color scheme and doesn't need one of these.
+ *
+ * One small set of numbers instead of every call site choosing its own alpha,
+ * so an accent-colored border or wash reads as the same weight of emphasis
+ * everywhere it appears, the way Manager's own recurring border/accent
+ * treatment does. [MorpheBadge]'s border already established 1dp width at
+ * 0.25 alpha for a chip; [badgeBorderAlpha] names that existing value rather
+ * than a new number for the same weight, and [accentBorderAlpha] is reached
+ * for instead when the surface is not chip-sized.
+ */
+object MorpheOutline {
+    /** Width of every hairline border drawn in a tone or accent color. */
+    val width: Dp = 1.dp
+
+    /** Border alpha over a tone/accent color: hero panels, banners, notices. */
+    const val accentBorderAlpha = 0.30f
+
+    /** Fill alpha over a tone/accent color, paired with [accentBorderAlpha]'s border. */
+    const val accentFillAlpha = 0.12f
+
+    /** Border alpha for a badge/chip-weight accent border — see [MorpheBadge]. */
+    const val badgeBorderAlpha = 0.25f
+
+    /** Alpha for a neutral hairline against `MaterialTheme.colorScheme.outline`. */
+    const val hairlineAlpha = 0.12f
+
+    /** Alpha of the accent border on an interactive surface: buttons, menus, tooltips. */
+    const val emphasisBorderAlpha = 0.35f
+
+    /** Alpha of the border on a selected surface. */
+    const val selectedBorderAlpha = 0.55f
+
+    /** Alpha of the border on a disabled surface. */
+    const val disabledBorderAlpha = 0.08f
+
+    // ── Semantic outlines ────────────────────────────────────────────────
+    // Reach for one of these instead of `BorderStroke(1.dp, color.copy(alpha = …))`, so the
+    // same meaning draws the same line on every surface.
+
+    /** The neutral outline as a plain color, for APIs that take a color rather than a stroke. */
+    @Composable
+    fun neutralColor(): Color = MaterialTheme.colorScheme.outline.copy(alpha = badgeBorderAlpha)
+
+    /**
+     * The hairline outline as a plain color — dividers and background tints that want
+     * the same quiet separation as [subtle] but take a bare [Color], not a [BorderStroke].
+     */
+    @Composable
+    fun subtleColor(): Color = MaterialTheme.colorScheme.outline.copy(alpha = hairlineAlpha)
+
+    /** The disabled outline as a plain color, for a `!enabled` branch or a disabled divider. */
+    @Composable
+    fun disabledColor(): Color = MaterialTheme.colorScheme.outline.copy(alpha = disabledBorderAlpha)
+
+    /**
+     * The outline, more visible than [neutralColor], for a hovered or focused control
+     * that should read as "more present" without switching to an accent color. Reuses
+     * [emphasisBorderAlpha]'s number for the same visual weight as [accent]'s border —
+     * just kept on the outline rather than tied to a color that reads as "selected."
+     */
+    @Composable
+    fun emphasisOutlineColor(): Color = MaterialTheme.colorScheme.outline.copy(alpha = emphasisBorderAlpha)
+
+    /** The accent outline as a plain color. */
+    @Composable
+    fun accentColor(color: Color = LocalMorpheAccents.current.primary): Color =
+        color.copy(alpha = emphasisBorderAlpha)
+
+    /** Quiet separation: dividers, dialog and card chrome. */
+    @Composable
+    fun subtle(): BorderStroke = stroke(MaterialTheme.colorScheme.outline, hairlineAlpha)
+
+    /** Default outline of an interactive control at rest. */
+    @Composable
+    fun neutral(): BorderStroke = stroke(MaterialTheme.colorScheme.outline, badgeBorderAlpha)
+
+    /** A selected or focused surface. */
+    @Composable
+    fun selected(): BorderStroke = stroke(MaterialTheme.colorScheme.primary, selectedBorderAlpha)
+
+    /** An accent-colored surface; defaults to the theme's primary accent. */
+    @Composable
+    fun accent(color: Color = LocalMorpheAccents.current.primary): BorderStroke =
+        stroke(color, emphasisBorderAlpha)
+
+    @Composable
+    fun success(): BorderStroke = stroke(LocalMorpheAccents.current.secondary, accentBorderAlpha)
+
+    @Composable
+    fun warning(): BorderStroke = stroke(LocalMorpheAccents.current.warning, accentBorderAlpha)
+
+    @Composable
+    fun error(): BorderStroke = stroke(MaterialTheme.colorScheme.error, emphasisBorderAlpha)
+
+    @Composable
+    fun disabled(): BorderStroke = stroke(MaterialTheme.colorScheme.outline, disabledBorderAlpha)
+
+    private fun stroke(color: Color, alpha: Float) = BorderStroke(width, color.copy(alpha = alpha))
+}
+
 /** Panel background fill color. */
 val panelFill: Color
     @Composable get() = MaterialTheme.colorScheme.surfaceColorAtElevation(1.dp)
@@ -265,11 +377,26 @@ enum class ThemePreference {
     }
 }
 
+// ════════════════════════════════════════════════════════════════════
+//  THEME COMPOSABLE
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * Resolves app card colors from the appearance settings, or `null` when cards keep the per-app
+ * colors declared by their patch bundle.
+ *
+ * Static, because a card reads it while drawing rather than while laying out, and a new resolver
+ * instance would otherwise invalidate every card that reads it.
+ */
+val LocalAppCardColorResolver = staticCompositionLocalOf<AppCardColorResolver?> { null }
+
 @Composable
 fun MorpheTheme(
     themePreference: ThemePreference = ThemePreference.SYSTEM,
     customAccentColorArgb: Int? = null,
     useSharpCorners: Boolean = false,
+    appCardColorMode: AppCardColorMode = AppCardColorMode.DEFAULT,
+    appCardColorValues: AppCardColorValues = AppCardColorValues(),
     content: @Composable () -> Unit
 ) {
     val baseColorScheme = when (themePreference) {
@@ -332,6 +459,22 @@ fun MorpheTheme(
     val shapes = MorpheShapes(corners)
     val typography = morpheTypography(font = font, monoFont = monoFont)
 
+    // The accent is passed as the fallback rather than as the value, so ACCENT mode follows a
+    // theme accent the user never overrode
+    val appCardColorResolver = remember(
+        appCardColorMode,
+        customAccentColorArgb,
+        accents.primary,
+        appCardColorValues,
+    ) {
+        AppCardColorDefaults.resolver(
+            mode = appCardColorMode,
+            accentHex = customAccentColorArgb?.let { Color(it).toHexString() }.orEmpty(),
+            accentFallback = accents.primary,
+            values = appCardColorValues,
+        )
+    }
+
     CompositionLocalProvider(
         LocalMorpheCorners provides corners,
         LocalMorpheShapes provides shapes,
@@ -340,6 +483,7 @@ fun MorpheTheme(
         LocalMorpheAccents provides accents,
         LocalMorpheDimens provides MorpheDimens(),
         LocalMorpheAlphas provides MorpheAlphas(),
+        LocalAppCardColorResolver provides appCardColorResolver,
         LocalMorpheTypography provides typography,
     ) {
         MaterialTheme(

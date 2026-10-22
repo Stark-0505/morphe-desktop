@@ -5,6 +5,7 @@
 
 package app.morphe.gui.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -25,6 +26,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import app.morphe.gui.ui.theme.MorpheOutline
 import app.morphe.gui.ui.theme.MorpheTheme
 
 /** Base dialog surface container providing shape, elevation, and content padding. */
@@ -35,11 +37,16 @@ fun MorpheDialogSurface(
     horizontalAlignment: Alignment.Horizontal = Alignment.CenterHorizontally,
     contentPadding: PaddingValues = MorpheTheme.dimens.dialogPadding,
     verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(14.dp),
+    /** Drawn by the [Surface] itself — pass [MorpheOutline.accent] for a dialog that
+     * needs to stand out from the background it sits over. Never add a second border
+     * via [modifier]; the two would stack. */
+    border: BorderStroke? = MorpheOutline.subtle(),
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(
         shape = MorpheTheme.shapes.large,
         color = MaterialTheme.colorScheme.surface,
+        border = border,
         modifier = modifier,
     ) {
         Column(

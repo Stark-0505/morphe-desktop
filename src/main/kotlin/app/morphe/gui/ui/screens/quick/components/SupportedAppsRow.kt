@@ -8,10 +8,12 @@ package app.morphe.gui.ui.screens.quick.components
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
@@ -22,10 +24,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.morphe.engine.model.SupportedApp
 import app.morphe.engine.util.DownloadUrlResolver.openUrlAndFollowRedirects
+import app.morphe.gui.data.appicon.AppIcon
 import app.morphe.gui.ui.components.*
 import app.morphe.gui.ui.icons.MorpheIcons
 import app.morphe.gui.ui.theme.*
 import app.morphe.morphe_desktop.generated.resources.*
+import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.stringResource
 
 @Composable
@@ -160,7 +164,6 @@ internal fun SupportedAppsRow(
                         },
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    val cardFills = LocalCardFills.current
                     filteredApps.forEach { app ->
                         val url = app.apkDownloadUrl
 
@@ -173,16 +176,11 @@ internal fun SupportedAppsRow(
                                 .fillMaxHeight(),
                             cornerRadius = MorpheTheme.corners.small,
                             appIconColorHex = app.appIconColor,
-                            fill = cardFills[app.packageName],
                             interactive = false,
-                            onCustomise = {
-                                cardFills.requestEdit(
-                                    app.packageName,
-                                    app.displayName,
-                                    app.appIconColor,
-                                )
-                            },
                         ) {
+                            // Read inside the card, which is where the resolved ink is provided
+                            val ink = LocalAppCardInk.current
+
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -191,10 +189,23 @@ internal fun SupportedAppsRow(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
+                                Box(
+                                    modifier = Modifier.size(32.dp).clip(RoundedCornerShape(MorpheTheme.corners.small)),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    AppIcon(app.packageName) {
+                                        Text(
+                                            text = app.displayName.firstOrNull()?.uppercase() ?: "?",
+                                            style = MorpheTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = ink.title,
+                                        )
+                                    }
+                                }
+
                                 Text(
                                     text = app.displayName,
                                     style = MorpheTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = Color.White,
+                                    color = ink.title,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -214,7 +225,7 @@ internal fun SupportedAppsRow(
                                 Text(
                                     text = recommendedVersionText,
                                     style = MorpheTheme.typography.bodySmall,
-                                    color = Color.White.copy(alpha = 0.6f)
+                                    color = ink.subtitle
                                 )
 
                                 if (url != null) {
@@ -223,13 +234,16 @@ internal fun SupportedAppsRow(
                                     } else {
                                         app.recommendedVersion
                                     }
+                                    val downloadScope = rememberCoroutineScope()
                                     MorpheCardChip(
                                         text = versionToDisplay?.let { "v$it" } ?: stringResource(Res.string.download),
                                         icon = MorpheIcons.OpenInNew,
                                         tooltip = versionToDisplay?.let { "v$it" },
                                     ) {
-                                        openUrlAndFollowRedirects(url) { resolved ->
-                                            uriHandler.openUri(resolved)
+                                        downloadScope.launch {
+                                            openUrlAndFollowRedirects(url) { resolved ->
+                                                uriHandler.openUri(resolved)
+                                            }
                                         }
                                     }
                                 }

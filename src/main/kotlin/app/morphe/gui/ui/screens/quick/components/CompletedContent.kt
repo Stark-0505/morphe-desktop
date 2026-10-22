@@ -46,7 +46,8 @@ internal fun CompletedContent(
     var isInstalling by remember { mutableStateOf(false) }
     var installError by remember { mutableStateOf<String?>(null) }
     var installSuccess by remember { mutableStateOf(false) }
-    val adbManager = remember { AdbManager() }
+    // Shared with DeviceMonitor's own polling — see DeviceMonitor.adbManager's doc.
+    val adbManager: AdbManager = koinInject()
     val engineConfigRepository: EngineConfigRepository = koinInject()
     val scope = rememberCoroutineScope()
     val completedScroll = rememberScrollState()

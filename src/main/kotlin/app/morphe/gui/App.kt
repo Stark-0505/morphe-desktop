@@ -26,15 +26,16 @@ import androidx.navigation.toRoute
 import app.morphe.engine.PatchEngine
 import app.morphe.engine.config.EngineConfigRepository
 import app.morphe.engine.util.Logger
-import app.morphe.gui.data.model.MorpheFill
+import app.morphe.engine.util.PersistenceFailures
+import app.morphe.gui.data.model.AppCardColorConfig
 import app.morphe.gui.data.repository.ActiveMode
 import app.morphe.gui.data.repository.ConfigRepository
 import app.morphe.gui.data.repository.PatchSourceManager
 import app.morphe.gui.data.repository.isRtlLanguage
 import app.morphe.gui.di.appModule
-import app.morphe.gui.ui.components.CardFillHost
 import app.morphe.gui.ui.components.LocalFrameWindowScope
 import app.morphe.gui.ui.components.SettingsDialogHost
+import app.morphe.gui.ui.components.PersistenceFailureDialog
 import app.morphe.gui.ui.screens.home.HomeScreen
 import app.morphe.gui.ui.screens.patches.PatchSelectionScreen
 import app.morphe.gui.ui.screens.patches.PatchesScreen
@@ -97,6 +98,8 @@ data class PatchSelectionParams(
     val apkArchitectures: List<String> = emptyList(),
     val patchesFilePaths: List<String> = emptyList(),
     val patchSourceNames: List<String> = emptyList(),
+    /** Parallel to [patchesFilePaths]: the stable id of each file's source. */
+    val patchSourceIds: List<String>,
     val initialSelectionByBundle: Map<String, Set<String>> = emptyMap(),
     val initialPatchOptions: Map<String, String> = emptyMap(),
     val apkVersion: String = "",
@@ -151,8 +154,8 @@ val LocalSettingsDialogVisible = compositionLocalOf<MutableState<Boolean>> {
 val LocalIsPatching = compositionLocalOf<MutableState<Boolean>> {
     error("No LocalIsPatching provided")
 }
-val LocalOnSettingsDismiss = compositionLocalOf { {} }
-val LocalOnUpdateChannelChanged = compositionLocalOf { {} }
+val LocalOnSettingsDismiss = compositionLocalOf<() -> Unit> { {} }
+val LocalOnUpdateChannelChanged = compositionLocalOf<() -> Unit> { {} }
 
 val LocalBackgroundType = compositionLocalOf<MutableState<BackgroundType>> { 
     error("No background type provided") 
@@ -169,6 +172,15 @@ val LocalCustomAccentColor = compositionLocalOf<MutableState<Int?>> {
     error("No LocalCustomAccentColor provided") 
 }
 
+/**
+ * The universal app card color configuration. One choice for every card, owned here and read by
+ * the appearance settings and by [app.morphe.gui.ui.theme.MorpheTheme], which turns it into the
+ * resolver the cards themselves use.
+ */
+val LocalAppCardColors = compositionLocalOf<MutableState<AppCardColorConfig>> {
+    error("No LocalAppCardColors provided")
+}
+
 val LocalSharpCorners = compositionLocalOf<MutableState<Boolean>> {
     error("No LocalSharpCorners provided")
 }
@@ -177,7 +189,12 @@ val LocalGroupPatchesByCategory = compositionLocalOf<MutableState<Boolean>> {
     error("No LocalGroupPatchesByCategory provided")
 }
 
-/** Auto-start ADB preference state. */
+/**
+ * Auto-start ADB preference. Exposed as a composition local so the
+ * SettingsDialog (writer) and DeviceIndicator + install buttons (readers)
+ * can react without prop-drilling through nested navigation destinations. App-level
+ * lifecycle (start/stop the daemon when this flips) is handled in `App.kt`.
+ */
 data class AdbPreferenceState(
     val enabled: Boolean,
     val onChange: (Boolean) -> Unit,
@@ -232,12 +249,19 @@ private fun appContent(
     var autoStartAdb by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(true) }
     val backgroundTypeState = remember { mutableStateOf(BackgroundType.CIRCLES) }
-    var cardFills by remember { mutableStateOf(emptyMap<String, MorpheFill>()) }
-    var globalCardFill by remember { mutableStateOf<MorpheFill?>(null) }
+    val appCardColorState = remember { mutableStateOf(AppCardColorConfig()) }
     val sharpCornersState = remember { mutableStateOf(false) }
     val groupPatchesByCategoryState = remember { mutableStateOf(true) }
     val backgroundSpeedState = remember { mutableFloatStateOf(1f) }
     val patchingCompletedState = remember { mutableStateOf(false) }
+
+    // Initialize PatchSourceManager and load config on startup
+    // Anything the user changed that could not be saved is announced here, once, so a failed write
+    // never leaves the UI looking as if it had worked.
+    var persistenceFailure by remember { mutableStateOf<PersistenceFailures.Failure?>(null) }
+    LaunchedEffect(Unit) {
+        PersistenceFailures.events.collect { persistenceFailure = it }
+    }
 
     LaunchedEffect(Unit) {
         patchSourceManager.initialize()
@@ -247,12 +271,14 @@ private fun appContent(
         groupPatchesByCategoryState.value = config.groupPatchesByCategory
         backgroundTypeState.value = try {
             BackgroundType.valueOf(config.backgroundType)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             BackgroundType.CIRCLES
         }
         enableParallaxState.value = config.enableParallax
-        cardFills = config.cardFills
-        globalCardFill = config.globalCardFill
+        appCardColorState.value = AppCardColorConfig(
+            mode = config.getAppCardColorMode(),
+            values = config.getAppCardColorValues(),
+        )
         sharpCornersState.value = config.useSharpCorners
 
         appLanguage = config.language
@@ -353,8 +379,11 @@ private fun appContent(
         MorpheTheme(
             themePreference = themePreference,
             customAccentColorArgb = customAccentColorState.value,
-            useSharpCorners = sharpCornersState.value
+            useSharpCorners = sharpCornersState.value,
+            appCardColorMode = appCardColorState.value.mode,
+            appCardColorValues = appCardColorState.value.values
         ) {
+            persistenceFailure?.let { PersistenceFailureDialog(it) { persistenceFailure = null } }
             CompositionLocalProvider(
                 LocalThemeState provides themeState,
                 LocalLanguageState provides languageState,
@@ -368,124 +397,107 @@ private fun appContent(
                 LocalCustomAccentColor provides customAccentColorState,
                 LocalSharpCorners provides sharpCornersState,
                 LocalGroupPatchesByCategory provides groupPatchesByCategoryState,
+                LocalAppCardColors provides appCardColorState,
                 LocalBackgroundSpeed provides backgroundSpeedState,
                 LocalPatchingCompleted provides patchingCompletedState
             ) {
-                CardFillHost(
-                    fills = cardFills,
-                    globalFill = globalCardFill,
-                    onChange = { pkg, fill ->
-                        cardFills = cardFills.toMutableMap().apply {
-                            if (fill == null) remove(pkg) else put(pkg, fill)
-                        }
-                        scope.launch { configRepository.setCardFill(pkg, fill) }
-                    },
-                    onGlobalChange = { fill ->
-                        globalCardFill = fill
-                        scope.launch { configRepository.setGlobalCardFill(fill) }
-                    },
-                    onClearAll = {
-                        cardFills = emptyMap()
-                        scope.launch { configRepository.clearCardFills() }
-                    },
-                ) {
                     // Tint native OS title bar to match surface color.
-                    val titleBarColor = MaterialTheme.colorScheme.surface
-                    val frameScope = LocalFrameWindowScope.current
-                    LaunchedEffect(titleBarColor, frameScope) {
-                        frameScope?.window?.let { applyTitleBarTint(it, titleBarColor) }
-                    }
+                val titleBarColor = MaterialTheme.colorScheme.surface
+                val frameScope = LocalFrameWindowScope.current
+                LaunchedEffect(titleBarColor, frameScope) {
+                    frameScope?.window?.let { applyTitleBarTint(it, titleBarColor) }
+                }
 
                     // macOS draggable title bar band.
-                    val isMac = remember {
-                        System.getProperty("os.name")?.lowercase()?.contains("mac") == true
-                    }
+                val isMac = remember {
+                    System.getProperty("os.name")?.lowercase()?.contains("mac") == true
+                }
 
-                    Surface(modifier = Modifier.fillMaxSize()) {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            if (isMac && frameScope != null) {
-                                with(frameScope) {
-                                    WindowDraggableArea {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(16.dp)
-                                                .background(titleBarColor)
-                                        )
-                                    }
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        if (isMac && frameScope != null) {
+                            with(frameScope) {
+                                WindowDraggableArea {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(16.dp)
+                                            .background(titleBarColor)
+                                    )
                                 }
                             }
+                        }
 
-                            Box(modifier = Modifier.fillMaxWidth().weight(1f).then(parallaxMod)) {
-                                AnimatedBackground(
-                                    type = backgroundTypeState.value,
-                                    enableParallax = enableParallaxState.value,
-                                    speedMultiplier = { backgroundSpeedState.floatValue },
-                                    patchingCompleted = { patchingCompletedState.value }
-                                )
+                        Box(modifier = Modifier.fillMaxWidth().weight(1f).then(parallaxMod)) {
+                            AnimatedBackground(
+                                type = backgroundTypeState.value,
+                                enableParallax = enableParallaxState.value,
+                                speedMultiplier = { backgroundSpeedState.floatValue },
+                                patchingCompleted = { patchingCompletedState.value }
+                            )
 
-                                val navController = rememberNavController()
+                            val navController = rememberNavController()
 
-                                CompositionLocalProvider(LocalNavController provides navController) {
-                                    key(appLanguage) {
-                                        SettingsDialogHost()
-                                    }
+                            CompositionLocalProvider(LocalNavController provides navController) {
+                                key(appLanguage) {
+                                    SettingsDialogHost()
+                                }
 
-                                    if (!isLoading) {
-                                        NavHost(
-                                            navController = navController,
-                                            startDestination = if (isSimplifiedMode) QuickPatchScreenRoute else HomeScreenRoute,
-                                            enterTransition = { Animations.screenEnter },
-                                            exitTransition = { Animations.screenExit },
-                                            popEnterTransition = { Animations.screenEnter },
-                                            popExitTransition = { Animations.screenExit }
-                                        ) {
-                                            composable<HomeScreenRoute> {
-                                                HomeScreen()
-                                            }
-                                            composable<QuickPatchScreenRoute> {
-                                                QuickPatchScreen()
-                                            }
-                                            composable<PatchesScreenRoute> { backStackEntry ->
-                                                val route = backStackEntry.toRoute<PatchesScreenRoute>()
-                                                PatchesScreen(apkName = route.apkName)
-                                            }
-                                            composable<PatchSelectionScreenRoute> { backStackEntry ->
-                                                val params = backStackEntry.getComplexArg<PatchSelectionParams>()
-                                                if (params != null) {
-                                                    PatchSelectionScreen(params = params)
-                                                }
-                                            }
-                                            composable<PatchingScreenRoute> { backStackEntry ->
-                                                val config = backStackEntry.getComplexArg<PatchEngine.Config>()
-                                                if (config != null) {
-                                                    PatchingScreen(config = config)
-                                                }
-                                            }
-                                            composable<ResultScreenRoute> { backStackEntry ->
-                                                val route = backStackEntry.toRoute<ResultScreenRoute>()
-                                                ResultScreen(outputPath = route.outputPath)
-                                            }
-                                            composable<SettingsScreenRoute>(
-                                                enterTransition = { Animations.pushEnter },
-                                                exitTransition = { Animations.pushExit },
-                                                popEnterTransition = { Animations.pushEnter },
-                                                popExitTransition = { Animations.pushExit }
-                                            ) {
+                                if (!isLoading) {
+                                    NavHost(
+                                        navController = navController,
+                                        startDestination = if (isSimplifiedMode) QuickPatchScreenRoute else HomeScreenRoute,
+                                        enterTransition = { Animations.screenEnter },
+                                        exitTransition = { Animations.screenExit },
+                                        popEnterTransition = { Animations.screenEnter },
+                                        popExitTransition = { Animations.screenExit }
+                                    ) {
+                                        composable<HomeScreenRoute> {
+                                            HomeScreen()
+                                        }
+                                        composable<QuickPatchScreenRoute> {
+                                            QuickPatchScreen()
+                                        }
+                                        composable<PatchesScreenRoute> { backStackEntry ->
+                                            val route = backStackEntry.toRoute<PatchesScreenRoute>()
+                                            PatchesScreen(apkName = route.apkName)
+                                        }
+                                        composable<PatchSelectionScreenRoute> { backStackEntry ->
+                                            val params = backStackEntry.getComplexArg<PatchSelectionParams>()
+                                            if (params != null) {
+                                                PatchSelectionScreen(params = params)
                                             }
                                         }
+                                        composable<PatchingScreenRoute> { backStackEntry ->
+                                            val config = backStackEntry.getComplexArg<PatchEngine.Config>()
+                                            if (config != null) {
+                                                PatchingScreen(config = config)
+                                            }
+                                        }
+                                        composable<ResultScreenRoute> { backStackEntry ->
+                                            val route = backStackEntry.toRoute<ResultScreenRoute>()
+                                            ResultScreen(outputPath = route.outputPath)
+                                        }
+                                        composable<SettingsScreenRoute>(
+                                            enterTransition = { Animations.pushEnter },
+                                            exitTransition = { Animations.pushExit },
+                                            popEnterTransition = { Animations.pushEnter },
+                                            popExitTransition = { Animations.pushExit }
+                                        ) {
+                                            // Available for push settings route
+                                        }
+                                    }
 
-                                        LaunchedEffect(isSimplifiedMode) {
-                                            val currentRoute = navController.currentBackStackEntry?.destination?.route
-                                            val isQuick = currentRoute?.endsWith("QuickPatchScreenRoute") == true
-                                            if (isSimplifiedMode && !isQuick) {
-                                                navController.navigate(QuickPatchScreenRoute) {
-                                                    popUpTo(0) { inclusive = true }
-                                                }
-                                            } else if (!isSimplifiedMode && isQuick) {
-                                                navController.navigate(HomeScreenRoute) {
-                                                    popUpTo(0) { inclusive = true }
-                                                }
+                                    LaunchedEffect(isSimplifiedMode) {
+                                        val currentRoute = navController.currentBackStackEntry?.destination?.route
+                                        val isQuick = currentRoute?.endsWith("QuickPatchScreenRoute") == true
+                                        if (isSimplifiedMode && !isQuick) {
+                                            navController.navigate(QuickPatchScreenRoute) {
+                                                popUpTo(0) { inclusive = true }
+                                            }
+                                        } else if (!isSimplifiedMode && isQuick) {
+                                            navController.navigate(HomeScreenRoute) {
+                                                popUpTo(0) { inclusive = true }
                                             }
                                         }
                                     }

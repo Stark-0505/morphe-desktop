@@ -118,4 +118,20 @@ class VersionUtilsTest {
         assertFalse("v1.39.0".isDevTag())
         assertFalse(null.isDevTag())
     }
+
+    @Test
+    fun `withVersionPrefix adds exactly one leading v`() {
+        assertEquals("v1.2.3", "1.2.3".withVersionPrefix())
+        assertEquals("v1.2.3", "v1.2.3".withVersionPrefix())
+        assertEquals("v1.2.3", "V1.2.3".withVersionPrefix())
+        assertEquals("v1.2.3", "  1.2.3 ".withVersionPrefix())
+        assertEquals("v1.2.3", "  v1.2.3 ".withVersionPrefix(), "padding must not defeat prefix handling")
+    }
+
+    @Test
+    fun `withVersionPrefix leaves a blank version blank rather than printing a bare v`() {
+        assertEquals("", "".withVersionPrefix())
+        assertEquals("", "   ".withVersionPrefix())
+        assertEquals("", "v".withVersionPrefix())
+    }
 }

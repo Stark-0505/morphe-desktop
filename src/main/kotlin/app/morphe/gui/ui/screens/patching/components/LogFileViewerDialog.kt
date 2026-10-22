@@ -31,7 +31,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import app.morphe.engine.util.Logger
 import app.morphe.gui.ui.components.MorpheButton
 import app.morphe.gui.ui.components.MorpheButtonSize
 import app.morphe.gui.ui.components.MorpheButtonVariant
@@ -42,7 +41,7 @@ import app.morphe.gui.ui.components.MorpheScrollbarStyle
 import app.morphe.gui.ui.icons.MorpheIcons
 import app.morphe.gui.ui.theme.MorpheTheme
 import app.morphe.morphe_desktop.generated.resources.*
-import java.awt.Desktop
+import app.morphe.gui.util.revealInFileManager
 import java.awt.datatransfer.StringSelection
 import java.io.File
 import kotlinx.coroutines.launch
@@ -115,15 +114,7 @@ fun LogFileViewerDialog(
                         label = stringResource(Res.string.open_folder),
                         variant = MorpheButtonVariant.OUTLINED,
                         size = MorpheButtonSize.COMPACT,
-                        onClick = {
-                            try {
-                                if (Desktop.isDesktopSupported()) {
-                                    Desktop.getDesktop().open(file.parentFile)
-                                }
-                            } catch (e: Exception) {
-                                Logger.error("Failed to open logs folder", e)
-                            }
-                        }
+                        onClick = { clipboardScope.launch { revealInFileManager(file.parentFile) } }
                     )
 
                     Spacer(Modifier.width(8.dp))

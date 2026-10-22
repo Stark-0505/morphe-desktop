@@ -107,7 +107,9 @@ fun MorpheBadge(
     val fill = when {
         variant == MorpheBadgeVariant.OUTLINED -> Color.Transparent
         variant == MorpheBadgeVariant.FILLED -> resolvedContainer
-        onGradient -> resolvedContainer.onCardGradient()
+        // On a card the caller passes the card's own resolved colors, already the right
+        // polarity for that fill, so the badge takes the container as given.
+        onGradient -> resolvedContainer
         else -> resolvedContainer.copy(alpha = resolvedContainer.alpha * 0.85f)
     }
 

@@ -6,8 +6,10 @@
 package app.morphe.engine.network
 
 import app.morphe.engine.GitHubPatMissingException
+import app.morphe.engine.util.AtomicFiles
 import app.morphe.engine.util.Logger
 import io.ktor.client.HttpClient
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
 import io.ktor.client.request.head
@@ -26,14 +28,19 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipInputStream
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 
 /**
@@ -43,6 +50,8 @@ import kotlinx.serialization.json.Json
 class HttpService(
     @PublishedApi internal val http: HttpClient,
     @PublishedApi internal val json: Json = Json { ignoreUnknownKeys = true },
+    /** Milliseconds to wait before attempt `n + 1` (given a server-supplied Retry-After, if any). Overridable for tests. */
+    private val backoffDelay: (attempt: Int, retryAfterMs: Long?) -> Long = RetryPolicy::delayAfter,
 ) {
 
     /**
@@ -52,15 +61,50 @@ class HttpService(
     suspend inline fun <reified T> request(
         url: String,
         crossinline builder: HttpRequestBuilder.() -> Unit = {},
-    ): T = withRetry("request $url") {
-        val response: HttpResponse = http.get(url) { builder() }
-        response.throwIfError(url)
-        val body = response.bodyAsText()
+    ): T {
+        // Only the *fetch* is retried. Decoding happens after the retry loop: a body that arrived
+        // but cannot be understood (an HTML error page, a captive portal, invalid JSON) is the same
+        // bytes on every attempt, so asking again would only add delay.
+        val body = withRetry("request $url") {
+            val response: HttpResponse = http.get(url) {
+                metadataTimeouts()
+                builder()
+            }
+            response.throwIfError(url)
+            response.bodyAsText()
+        }
         if (T::class == String::class) {
             @Suppress("UNCHECKED_CAST")
-            body as T
-        } else {
+            return body as T
+        }
+        rejectIfHtml(url, body)
+        return try {
             json.decodeFromString(body)
+        } catch (e: SerializationException) {
+            throw MalformedResponseException(url, "response is not valid JSON for this request", body, e)
+        } catch (e: IllegalArgumentException) {
+            throw MalformedResponseException(url, "response is not valid JSON for this request", body, e)
+        }
+    }
+
+    /** Throws [MalformedResponseException] for a web page where JSON was expected.
+     *  Separate and `@PublishedApi` because [request] is a public inline function and so cannot
+     *  reach the internal [RetryPolicy] directly. */
+    @PublishedApi
+    internal fun rejectIfHtml(url: String, body: String) {
+        if (RetryPolicy.looksLikeHtml(body)) {
+            throw MalformedResponseException(url, "received an HTML page instead of JSON", body)
+        }
+    }
+
+    /** Short, bounded timeouts for small metadata calls. Large downloads keep the client's idle-based
+     *  timeouts and deliberately get no total wall-clock cap. */
+    @PublishedApi
+    internal fun HttpRequestBuilder.metadataTimeouts() {
+        timeout {
+            connectTimeoutMillis = METADATA_CONNECT_TIMEOUT_MS
+            socketTimeoutMillis = METADATA_SOCKET_TIMEOUT_MS
+            requestTimeoutMillis = METADATA_REQUEST_TIMEOUT_MS
         }
     }
 
@@ -69,7 +113,10 @@ class HttpService(
         url: String,
         builder: HttpRequestBuilder.() -> Unit = {},
     ): HttpResponse = withRetry("head $url") {
-        val response = http.head(url) { builder() }
+        val response = http.head(url) {
+            metadataTimeouts()
+            builder()
+        }
         if (response.status == HttpStatusCode.TooManyRequests) {
             throw TooManyRequestsException(response.retryAfterMillis())
         }
@@ -77,15 +124,27 @@ class HttpService(
     }
 
     /**
-     * Streams [url] directly to [saveLocation] via a `.part` file, avoiding buffering
-     * large files in memory. Incomplete files are deleted on failure.
+     * Download [url] to [saveLocation], streaming straight to disk. The
+     * response body is never stored in memory (Pratham's chess patch is 100MB+ and that would
+     * cause issues. This fixes it. Writes to a `.part` file and atomically swaps on success;
+     * removes the partial file on any failure. Throws on failure after retries.
+     *
+     * [maxBytes], when set, is enforced twice: immediately against `Content-Length` if the
+     * server sends one (fails before a single body byte is read), and again as a running
+     * total while streaming (catches a response that lies about or omits `Content-Length`).
+     * Exceeding it throws [ResponseTooLargeException], which — unlike a transient network
+     * error — is never retried; a response that's too large now will still be too large on
+     * attempt 2.
      */
     suspend fun downloadToFile(
         url: String,
         saveLocation: File,
         onProgress: ((bytesRead: Long, contentLength: Long?) -> Unit)? = null,
+        maxBytes: Long? = null,
         builder: HttpRequestBuilder.() -> Unit = {},
-    ): File {
+    ): File = downloadLocks.getOrPut(saveLocation.absoluteFile.path) { Mutex() }.withLock {
+        // One writer per destination: two callers streaming into the same `.part` would
+        // truncate each other's bytes.
         saveLocation.parentFile?.mkdirs()
         val part = File(saveLocation.parentFile, "${saveLocation.name}.part")
         try {
@@ -94,10 +153,20 @@ class HttpService(
                     http.prepareGet(url) { builder() }.execute { response ->
                         response.throwIfError(url)
                         val contentLength = response.headers[HttpHeaders.ContentLength]?.toLongOrNull()
-                        withContext(Dispatchers.IO) {
+                        val encoded = response.headers[HttpHeaders.ContentEncoding] != null
+                        if (maxBytes != null && contentLength != null && contentLength > maxBytes) {
+                            throw ResponseTooLargeException(url, maxBytes)
+                        }
+                        val copied = withContext(Dispatchers.IO) {
                             response.bodyAsChannel().toInputStream().use { input ->
-                                copyStreaming(input, out, contentLength, onProgress)
+                                copyStreaming(input, out, contentLength, maxBytes, url, onProgress)
                             }
+                        }
+                        // A connection that drops mid-body can end the stream early without an
+                        // error. Fewer bytes than promised is a truncated file, not a download
+                        // (skipped when a Content-Encoding means the length counts encoded bytes).
+                        if (!encoded && contentLength != null && copied != contentLength) {
+                            throw IOException("incomplete download of $url: got $copied of $contentLength bytes")
                         }
                     }
                 }
@@ -127,6 +196,7 @@ class HttpService(
 
         var page = 1
         var matchingRun: GitHubWorkflowRun? = null
+        var matchingShaRun: GitHubWorkflowRun? = null
 
         while (page <= 10) {
             val runsUrl = "https://api.github.com/repos/$owner/$repo/actions/runs?per_page=100&page=$page"
@@ -134,13 +204,23 @@ class HttpService(
                 headers { applyGitHubApiHeaders(pat) }
             }
 
-            matchingRun = runs.workflowRuns.firstOrNull { it.headSha == targetSha }
+            val matchingRuns = runs.workflowRuns.filter { it.headSha == targetSha }
+            matchingShaRun = matchingShaRun ?: matchingRuns.firstOrNull()
+            matchingRun = matchingRuns.firstOrNull {
+                it.status.equals("completed", ignoreCase = true) &&
+                    it.conclusion.equals("success", ignoreCase = true)
+            }
             if (matchingRun != null) break
             if (runs.workflowRuns.isEmpty()) break
             page++
         }
 
         val run = matchingRun
+            ?: matchingShaRun?.let {
+                throw IllegalStateException(
+                    "GitHub Actions run for PR #$pullRequestNumber (SHA: $targetSha) is not completed successfully"
+                )
+            }
             ?: throw IllegalStateException("No GitHub Actions run found for PR #$pullRequestNumber (SHA: $targetSha)")
 
         val artifactsUrl = "https://api.github.com/repos/$owner/$repo/actions/runs/${run.id}/artifacts"
@@ -150,8 +230,9 @@ class HttpService(
 
         val artifact = artifactsResponse.artifacts.firstOrNull {
             it.name.contains("patch", ignoreCase = true) || it.name.endsWith(".mpp", ignoreCase = true)
-        } ?: artifactsResponse.artifacts.firstOrNull()
-            ?: throw IllegalStateException("No artifacts found for PR #$pullRequestNumber, did the GitHub Action run successfully?")
+        } ?: throw IllegalStateException(
+            "No patch artifact found for PR #$pullRequestNumber, did the GitHub Action publish the .mpp artifact?"
+        )
 
         return GitHubPrAsset(
             downloadUrl = artifact.archiveDownloadUrl,
@@ -240,7 +321,7 @@ class HttpService(
                                 }
                             } else {
                                 response.bodyAsChannel().toInputStream().use { input ->
-                                    copyStreaming(input, out, contentLength, onProgress)
+                                    copyStreaming(input, out, null, contentLength, url, onProgress)
                                 }
                             }
                         }
@@ -256,20 +337,28 @@ class HttpService(
 
     private fun finalizePartFile(part: File, saveLocation: File, url: String): File {
         if (part.length() == 0L) throw HttpException(null, url, "download returned 0 bytes")
-        if (saveLocation.exists()) saveLocation.delete()
-        if (!part.renameTo(saveLocation)) {
-            part.copyTo(saveLocation, overwrite = true)
-            part.delete()
-        }
+        // Replace in one step. The previous file is never deleted first, so a failed swap
+        // leaves the last valid destination exactly as it was.
+        AtomicFiles.replaceFile(part, saveLocation)
         return saveLocation
     }
 
+    /**
+     * Copy [input] → [output] in 64 KB chunks (constant memory), reporting byte
+     * progress. Progress is throttled: at most once per [PROGRESS_MIN_BYTES] or
+     * [PROGRESS_INTERVAL_MS], whichever first, plus a guaranteed final call.
+     * Aborts via [ResponseTooLargeException] the moment the running total would
+     * exceed [maxBytes], before that final chunk is written — so a too-large
+     * response is never fully buffered to disk just to be deleted afterward.
+     */
     private fun copyStreaming(
         input: InputStream,
         output: OutputStream,
         contentLength: Long?,
+        maxBytes: Long?,
+        url: String,
         onProgress: ((bytesRead: Long, contentLength: Long?) -> Unit)?,
-    ) {
+    ): Long {
         val buffer = ByteArray(64 * 1024)
         var total = 0L
         var lastBytes = 0L
@@ -277,8 +366,11 @@ class HttpService(
         while (true) {
             val read = input.read(buffer)
             if (read == -1) break
-            output.write(buffer, 0, read)
             total += read
+            if (maxBytes != null && total > maxBytes) {
+                throw ResponseTooLargeException(url, maxBytes)
+            }
+            output.write(buffer, 0, read)
             if (onProgress != null) {
                 val now = System.currentTimeMillis()
                 if (total - lastBytes >= PROGRESS_MIN_BYTES || now - lastAt >= PROGRESS_INTERVAL_MS) {
@@ -289,37 +381,42 @@ class HttpService(
             }
         }
         onProgress?.invoke(total, contentLength)
+        return total
     }
 
     /** Executes [block] with exponential backoff on transient errors and HTTP 429. */
     @PublishedApi
     internal suspend fun <T> withRetry(operation: String, block: suspend () -> T): T {
         var attempt = 0
-        var delayMs = INITIAL_RETRY_DELAY_MS
         while (true) {
             attempt++
             try {
                 return block()
             } catch (t: CancellationException) {
                 throw t
+            } catch (t: ResponseTooLargeException) {
+                // Deterministic, not transient: the response will still be too large
+                // on the next attempt, so retrying would just waste 3x the bandwidth.
+                throw t
             } catch (t: TooManyRequestsException) {
-                if (attempt >= MAX_RETRY_ATTEMPTS) {
+                if (attempt >= RetryPolicy.MAX_ATTEMPTS) {
                     throw HttpException(HttpStatusCode.TooManyRequests, operation, cause = t)
                 }
-                val wait = (t.retryAfterMillis ?: delayMs).coerceAtMost(MAX_RETRY_DELAY_MS)
-                Logger.warn("$operation hit 429 (attempt $attempt/$MAX_RETRY_ATTEMPTS), waiting ${wait}ms")
+                val wait = backoffDelay(attempt, t.retryAfterMillis)
+                Logger.warn("$operation hit 429 (attempt $attempt/${RetryPolicy.MAX_ATTEMPTS}), waiting ${wait}ms")
                 delay(wait.milliseconds)
-                delayMs = (delayMs * 2).coerceAtMost(MAX_RETRY_DELAY_MS)
             } catch (t: HttpException) {
-                if (!t.isRetryable || attempt >= MAX_RETRY_ATTEMPTS) throw t
+                if (!t.isRetryable || attempt >= RetryPolicy.MAX_ATTEMPTS) throw t
                 Logger.warn("$operation attempt $attempt: retryable HTTP error: ${t.message}")
-                delay(delayMs.milliseconds)
-                delayMs = (delayMs * 2).coerceAtMost(MAX_RETRY_DELAY_MS)
+                delay(backoffDelay(attempt, null).milliseconds)
+            } catch (t: MalformedResponseException) {
+                throw t   // the same bytes would come back
             } catch (t: Exception) {
-                if (attempt >= MAX_RETRY_ATTEMPTS) throw t
+                // Only network I/O trouble is worth another attempt. A parse failure, an illegal
+                // state or a local disk error is surfaced immediately instead of being retried.
+                if (!RetryPolicy.isTransient(t) || attempt >= RetryPolicy.MAX_ATTEMPTS) throw t
                 Logger.warn("$operation attempt $attempt failed: ${t::class.simpleName}: ${t.message}")
-                delay(delayMs.milliseconds)
-                delayMs = (delayMs * 2).coerceAtMost(MAX_RETRY_DELAY_MS)
+                delay(backoffDelay(attempt, null).milliseconds)
             }
         }
     }
@@ -368,16 +465,43 @@ class HttpService(
         cause,
     ) {
         val isRetryable: Boolean
-            get() = status == null || status == HttpStatusCode.TooManyRequests || status.value >= 500
+            get() = RetryPolicy.isRetryableStatus(status?.value)
     }
 
     class TooManyRequestsException(val retryAfterMillis: Long?) :
         Exception("HTTP 429 Too Many Requests")
 
+    /**
+     * A response arrived (status 2xx) but is not what the caller needs: an HTML page where JSON was
+     * expected, or JSON of the wrong shape. Never retried, because the same request returns the same
+     * bytes. [detail] is a concise diagnosis; the body is not included beyond a short snippet.
+     */
+    class MalformedResponseException(
+        val requestUrl: String,
+        val detail: String,
+        body: String? = null,
+        cause: Throwable? = null,
+    ) : Exception(
+        buildString {
+            append("Unusable response from $requestUrl: $detail")
+            val title = body?.let { Regex("<title>(.*?)</title>", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1)?.trim() }
+            if (!title.isNullOrBlank()) append(" (page title: ${title.take(80)})")
+        },
+        cause,
+    )
+
+    /** Thrown by [downloadToFile] when a response exceeds a caller-supplied [maxBytes]. */
+    class ResponseTooLargeException(val requestUrl: String, val limitBytes: Long) :
+        Exception("Response from $requestUrl exceeded the $limitBytes byte limit")
+
     companion object {
-        private const val MAX_RETRY_ATTEMPTS = 3
-        private const val INITIAL_RETRY_DELAY_MS = 1_000L
-        private const val MAX_RETRY_DELAY_MS = 30_000L
+        /** Metadata/API calls: fail fast (see [RetryPolicy] for what is retried and how often). */
+        @PublishedApi internal const val METADATA_CONNECT_TIMEOUT_MS = 8_000L
+        @PublishedApi internal const val METADATA_SOCKET_TIMEOUT_MS = 10_000L
+        @PublishedApi internal const val METADATA_REQUEST_TIMEOUT_MS = 20_000L
+
+        /** One lock per download destination, shared by every [HttpService] instance. */
+        private val downloadLocks = ConcurrentHashMap<String, Mutex>()
 
         private const val PROGRESS_MIN_BYTES = 64 * 1024L
         private const val PROGRESS_INTERVAL_MS = 200L
@@ -410,6 +534,8 @@ private data class GitHubPull(
 private data class GitHubWorkflowRun(
     val id: Long = 0L,
     @SerialName("head_sha") val headSha: String = "",
+    val status: String? = null,
+    val conclusion: String? = null,
     @SerialName("display_title") val displayTitle: String? = null,
 )
 

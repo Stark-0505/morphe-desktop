@@ -5,6 +5,7 @@
 
 package app.morphe.engine.apk
 
+import app.morphe.engine.MorpheData
 import app.morphe.engine.patches.PatchBundleLoader
 import java.io.File
 
@@ -73,8 +74,28 @@ object ApkOutputNaming {
         ApkInspector.inspect(apkFile)?.versionName?.takeIf { it.isNotBlank() }
 
     /**
-     * Computes output APK path:
-     * `<base>/<appName>/<appName>-<version>[-patches-<patchesVersion>].apk`
+     * Compute the unified output APK path. Layout:
+     * `<base>/<appName>/<appName>-{apkVer}-patches-{patchesVer}.apk`
+     *
+     * - Per-app subfolder prevents collisions when patching different APK
+     *   versions of the same package
+     * - Both versions encoded in the filename so the output is self-describing
+     * - `patchesFile` is optional; if null, no `-patches-{ver}` suffix is added
+     *
+     * @param inputApk       the APK being patched. Only used to derive the app
+     *                       folder name and version when they aren't supplied. Its
+     *                       location never decides where the output goes.
+     * @param patchesFile    primary `.mpp` file. Used only for the suffix —
+     *                       in multi-source mode pass any one of the bundles.
+     * @param baseOutputDir  an explicitly configured output directory (e.g. the
+     *                       GUI's default output directory). When null, Morphe's own
+     *                       [MorpheData.patchedApksDir] is used, never the input
+     *                       APK's folder.
+     * @param appDisplayName Pre-resolved app label (e.g. "Youtube"). If null,
+     *                       falls back to the input APK's filename without
+     *                       extension. GUI callers pass the value from their
+     *                       apkInfo; the CLI can call [resolveAppDisplayName]
+     *                       to populate this.
      */
     fun outputApkPath(
         inputApk: File,
@@ -85,9 +106,7 @@ object ApkOutputNaming {
     ): File {
         val appFolderName = (appDisplayName ?: inputApk.nameWithoutExtension)
             .replace(" ", "-")
-        val base = baseOutputDir
-            ?: inputApk.absoluteFile.parentFile
-            ?: File("").absoluteFile
+        val base = baseOutputDir ?: MorpheData.patchedApksDir
         val outputDir = File(base, appFolderName).also { it.mkdirs() }
         // Prefer caller-provided version, then manifest, then filename fallback.
         val version = sanitizeForFilename(

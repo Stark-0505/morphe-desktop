@@ -47,7 +47,6 @@
     <!-- Home Screen - HomeHeader -->
     <!-- Home Screen - SupportedAppListRow -->
     <!-- Home Screen - SupportedAppsListPane -->
-    <string name="home_list_no_apps_match">Nėra programų, atitinkančių \"%1$s\"</string>
     <string name="home_sort_recommended">Rekomenduojama</string>
     <!-- Home Screen - YourAppsPane -->
     <string name="home_filter_all_apps">Visos programos</string>

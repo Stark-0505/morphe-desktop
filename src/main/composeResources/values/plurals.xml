@@ -44,13 +44,9 @@
         <item quantity="one">%1$d patch</item>
         <item quantity="other">%1$d patches</item>
     </plurals>
-    <plurals name="settings_app_cards_override_count">
-        <item quantity="one">%1$d card overrides this</item>
-        <item quantity="other">%1$d cards override this</item>
-    </plurals>
-    <plurals name="home_detail_download_bundles">
-        <item quantity="one">Download %1$d bundle</item>
-        <item quantity="other">Download %1$d bundles</item>
+    <plurals name="installed_info_bundle_count">
+        <item quantity="one">%1$d bundle</item>
+        <item quantity="other">%1$d bundles</item>
     </plurals>
     <plurals name="patching_graph_cpu_cores_detail">
         <item quantity="one">%1$d core</item>

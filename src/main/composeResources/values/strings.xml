@@ -5,6 +5,9 @@
     <string name="morphe_logo_content_description">Morphe Logo</string>
     <string name="dismiss">Dismiss</string>
     <string name="ok">OK</string>
+    <string name="persistence_failure_title">Couldn't save</string>
+    <string name="persistence_failure_message">Morphe couldn't save %1$s, so this change may be lost when you close the app.</string>
+    <string name="persistence_failure_reason">Reason: %1$s</string>
     <string name="retry">Retry</string>
     <string name="clear">Clear</string>
     <string name="search">Search</string>
@@ -37,14 +40,11 @@
     <string name="installing">Installing…</string>
     <string name="folder">Folder</string>
     <string name="customize">Customize</string>
-    <string name="customize_card_description">Customize card</string>
     <string name="none">None</string>
     <string name="select_image">Select image</string>
     <string name="select_file">Select file</string>
-    <string name="failed">Failed</string>
     <string name="copy">Copy</string>
     <string name="copied">Copied</string>
-    <string name="click_to_copy">Click to copy</string>
     <string name="enable_adb_button">Enable ADB</string>
     <string name="drag_to_reorder">Drag to reorder</string>
     <string name="off">Off</string>
@@ -93,16 +93,11 @@
     <string name="gradient_angle">Angle</string>
 
     <!-- App Card Fill Dialog -->
-    <string name="card_fill_title">Customize card</string>
     <string name="card_fill_example_app_name">Example app name</string>
     <string name="card_fill_mode_default">Default</string>
-    <string name="card_fill_mode_default_blurb">The color that ships with the patch bundle</string>
     <string name="card_fill_mode_accent">Accent</string>
-    <string name="card_fill_mode_accent_blurb">Tracks the accent color, changing when it does</string>
     <string name="card_fill_mode_gradient">Gradient</string>
-    <string name="card_fill_mode_gradient_blurb">Any number of stops, linear, radial or conic</string>
     <string name="card_fill_mode_solid">Solid</string>
-    <string name="card_fill_mode_solid_blurb">One flat colour</string>
 
     <!-- Quick Patch Screen -->
     <string name="quick_patch_patches_label">Patches</string>
@@ -261,7 +256,7 @@
     <string name="home_dialog_uninstall_message">This removes %1$s from the connected device. The patched APK on disk and your history are kept unless you choose otherwise below</string>
     <string name="home_dialog_uninstall_also_forget">Also remove from Your apps</string>
     <string name="home_dialog_missing_apk_title">Original APK not found</string>
-    <string name="home_dialog_missing_apk_message">The input APK for %1$s is no longer at:\n%2$s\n\nSelect the APK again to repatch with your saved settings</string>
+    <string name="home_dialog_missing_apk_message">The original APK for %1$s is no longer at:\n%2$s\n\nSelect the APK again to repatch with your saved settings</string>
     <string name="home_dialog_select_apk">Select APK…</string>
     <string name="home_dialog_select_apk_to_repatch">Select APK to repatch</string>
 
@@ -276,17 +271,14 @@
     <string name="home_app_row_not_on_device">Not on this device</string>
     <string name="home_app_row_on_device">On device</string>
     <string name="home_app_row_on_device_with_version">On device · v%1$s</string>
-    <string name="home_app_row_on_device_not_signed">On device · not Morphe-signed</string>
-    <string name="home_app_row_on_device_with_version_not_signed">On device · v%1$s · not Morphe-signed</string>
-    <string name="home_app_row_update_available_badge">Update available</string>
     <string name="home_app_row_modified_badge">Modified</string>
     <string name="home_app_row_apk_missing_badge">APK missing</string>
     <string name="home_app_row_section_patches_from">Patches from</string>
+    <string name="home_app_row_section_already_installed">Already on your device</string>
 
     <!-- Home Screen - SupportedAppsListPane -->
     <string name="home_list_load_failed">Load failed</string>
     <string name="home_list_no_supported_apps">No supported apps</string>
-    <string name="home_list_no_apps_match">No apps match "%1$s"</string>
     <string name="home_sort_recommended">Recommended</string>
     <string name="home_sort_recommended_desc">Patched apps first, then installed, then by name</string>
     <string name="home_sort_name_asc">Name (A to Z)</string>
@@ -303,53 +295,12 @@
     <string name="home_filter_all_apps">All apps</string>
     <string name="home_filter_your_apps">Your apps</string>
     <string name="home_banner_view">View</string>
-    <string name="home_your_apps_install_ready">Install ready</string>
-    <string name="home_your_apps_newer_patch_hint">Newer patch may bump the app, click Update to check</string>
-    <string name="home_your_apps_device_version_ready">Patched v%1$s ready, device on v%2$s (no repatch needed)</string>
-    <string name="home_your_apps_install_ready_hint">Patched v%1$s ready to install (no repatch needed)</string>
     <string name="home_action_install">Install</string>
-    <string name="home_action_install_to_device">Install to device</string>
     <string name="home_action_installing">Installing…</string>
-    <string name="home_action_preparing">Preparing…</string>
     <string name="home_action_update">Update</string>
-    <string name="home_action_repatch">Repatch</string>
     <string name="home_action_uninstalling">Uninstalling…</string>
-    <string name="home_detail_source_apk_label">Source APK</string>
-    <string name="home_detail_patch_bundle_label">Patch bundle</string>
-    <string name="home_detail_no_sources_enabled">No sources enabled</string>
-    <string name="home_detail_enable_or_add_source">enable or add one below</string>
-    <string name="home_detail_the_loaded_bundle">the loaded bundle</string>
-    <string name="home_detail_error_download_bundle">Could not download %1$s %2$s: %3$s</string>
-    <string name="home_detail_downloading_patch">downloading %1$s</string>
-    <string name="home_detail_resolving_patch_files">resolving patch files</string>
-    <string name="home_detail_downloading_percent">Downloading %1$d%</string>
-    <string name="home_detail_details_title">Details</string>
-    <string name="home_detail_output_path_label">Output path</string>
-    <string name="home_detail_using_label">Using</string>
-    <string name="home_detail_apk_origin_sub">the APK this app was patched from</string>
-    <string name="home_detail_reading_chosen_bundle">Reading the chosen bundle…</string>
-    <string name="home_detail_bundle_not_downloaded_warning">Versions below are what %1$s supports. You picked %2$s, which is not downloaded, so what it supports is unknown</string>
-    <string name="home_detail_bundle_does_not_support_warning">%1$s does not support %2$s. Pick one of these instead</string>
-    <string name="home_detail_versions_what_bundle_supports">Versions below are what %1$s supports</string>
-    <string name="home_detail_choose_apk_button">Choose APK</string>
-    <string name="home_detail_select_apk_title">Select an APK to patch</string>
-    <string name="home_detail_new_source_button">New source</string>
-    <string name="home_detail_local_mpp_button">Local .mpp</string>
-    <string name="home_detail_select_patch_bundle_title">Select a patch bundle</string>
-    <string name="home_detail_latest_available">latest available</string>
-    <string name="home_detail_pinned_badge">Pinned</string>
-    <string name="home_detail_loading_versions">Loading versions…</string>
-    <string name="home_detail_no_other_versions">No other versions available</string>
-    <string name="home_detail_app_version_label">App version</string>
-    <string name="home_detail_newer_patch_available_note">A newer patch is available and may support a newer app version. Click Update to check</string>
-    <string name="home_detail_section_patches_applied">Patches applied</string>
-    <string name="home_detail_section_options">Options</string>
     <string name="home_detail_output_size_label">Output size</string>
-    <string name="home_detail_sha256_label">SHA-256</string>
-    <string name="home_detail_ready_device_version">v%1$s ready · device on v%2$s</string>
-    <string name="home_detail_ready_no_repatch">v%1$s ready, no repatch needed</string>
     <string name="home_advice_unsupported">v%1$s is no longer supported. Please update to v%2$s</string>
-    <string name="home_advice_unsupported_by_patches">v%1$s is no longer supported by the latest patches</string>
     <string name="home_date_today">today</string>
     <string name="home_date_yesterday">yesterday</string>
     <string name="home_date_days_ago">%1$dd ago</string>
@@ -404,6 +355,7 @@
     <string name="patch_selection_mode_your_defaults">Your defaults</string>
     <string name="patch_selection_mode_patch_defaults">Patch defaults</string>
     <string name="patch_selection_mode_all">All</string>
+    <string name="patch_selection_mode_copy_from">Copy from…</string>
     <string name="patch_selection_strip_no_libs_headline">No native libs</string>
     <string name="patch_selection_strip_no_libs_detail">stripping does not apply</string>
     <string name="patch_selection_strip_universal_headline">Universal libs</string>
@@ -597,8 +549,6 @@
     <string name="add_source">Add source</string>
     <string name="source_sheet_title">Patch sources</string>
     <string name="source_sheet_reload_description">Reload patches</string>
-    <string name="source_sheet_quick_mode_hint">Pick which source Quick Patch uses. Multi-source is available in Expert mode</string>
-    <string name="source_sheet_multi_mode_hint">Enable/Disable any combination. Patches from all enabled sources are unioned</string>
     <string name="source_sheet_done_button">Done</string>
     <string name="source_sheet_type_preinstalled">Pre-installed</string>
     <string name="source_sheet_builtin">Built-in</string>
@@ -736,8 +686,6 @@
     <string name="settings_accent_custom_description">Custom accent color</string>
     <string name="settings_accent_remove_color_description">Remove saved color</string>
     <string name="settings_section_app_cards">App cards</string>
-    <string name="settings_app_cards_color_all">Color for every card</string>
-    <string name="settings_app_cards_color_all_desc">Cards you have customized individually keep their own color</string>
     <string name="settings_section_patch_list">Patch list</string>
     <string name="settings_toggle_patch_categories_label">Patch categories</string>
     <string name="settings_toggle_patch_categories_desc">Group patches into expandable categories</string>
@@ -770,13 +718,14 @@
     <!-- Settings - System -->
     <string name="settings_toggle_auto_cleanup_label">Auto-cleanup temp files</string>
     <string name="settings_toggle_auto_cleanup_desc">Delete temporary files after patching</string>
+    <string name="settings_toggle_save_originals_label">Store original APKs in Morphe</string>
+    <string name="settings_toggle_save_originals_desc">After a successful patch, move the original APK into Morphe's storage so repatching and updates keep working even if the file you picked is deleted. Turn off to leave your file where it is.</string>
     <string name="settings_channel_label">Check for updates</string>
     <string name="settings_channel_desc_stable">You'll see a banner when a new stable release is available</string>
     <string name="settings_channel_desc_dev">You'll see a banner when a new dev or stable release is available</string>
     <string name="settings_channel_desc_off">Update checks are off. Re-enable here anytime</string>
     <string name="settings_section_output_folder">Output folder</string>
     <string name="settings_output_folder_desc">Where patched APKs are saved. A per-app subfolder is created inside</string>
-    <string name="settings_output_folder_default">APK's folder (default)</string>
     <string name="settings_output_folder_picker_title">Select output folder</string>
     <string name="settings_output_folder_not_found">Folder not found, will be created on next patch</string>
     <string name="settings_toggle_auto_start_adb_label">Auto-start ADB</string>
@@ -867,4 +816,130 @@
     <string name="changelog_dialog_title">View changelog</string>
     <string name="changelog_show_older_button">Show older releases</string>
     <string name="changelog_view_on_github_button">View on GitHub</string>
+
+    <!-- Additions for the app-card colors, source management, installed-app info and copy-selection features -->
+    <!-- Accessibility -->
+    <string name="a11y_state_selected">Selected</string>
+    <string name="a11y_state_not_selected">Not selected</string>
+    <!-- App card colors -->
+    <string name="app_card_mode_default_desc">Every card wears the color its patch bundle declares for that app.</string>
+    <string name="app_card_mode_accent_desc">Cards follow the accent color, and change with it.</string>
+    <string name="app_card_mode_gradient_desc">A gradient you choose, with each stop either fixed or following the app.</string>
+    <string name="app_card_mode_solid_desc">One flat color across every card.</string>
+    <string name="app_card_stop_start">Start</string>
+    <string name="app_card_stop_middle">Middle</string>
+    <string name="app_card_stop_end">End</string>
+    <string name="app_card_stop_solid">Color</string>
+    <string name="app_card_dialog_title">App card colors</string>
+    <string name="app_card_dialog_follow_app">Follow the app</string>
+    <string name="app_card_dialog_follow_app_desc">Take this color from each app's own patch bundle.</string>
+    <string name="app_card_dialog_follows_app">Follows the app</string>
+    <!-- Color picker -->
+    <string name="color_picker_shade">Shade</string>
+    <string name="color_picker_hue">Hue</string>
+    <string name="color_picker_invalid_hex">Not a color. Use #RRGGBB or #AARRGGBB.</string>
+    <!-- Copy selection -->
+    <string name="copy_selection_title">Copy selection from</string>
+    <string name="copy_selection_subtitle">Reuse a saved selection from another app, or from this app patched with a different source.</string>
+    <string name="copy_selection_empty">No other saved selections yet — patch a couple of apps first.</string>
+    <string name="copy_selection_same_source">same source</string>
+    <string name="copy_selection_none_applicable">none of these patches exist in this bundle</string>
+    <string name="copy_selection_nothing_to_copy">Nothing could be copied: that saved selection has no patches in common with this bundle.</string>
+    <!-- Home -->
+    <string name="home_uninstall_forget_failed">Uninstalled, but couldn't remove it from Your apps: %1$s</string>
+    <string name="home_forget_failed">Couldn't remove it from Your apps: %1$s</string>
+    <!-- Installed app info -->
+    <string name="installed_info_reset_saved_patches">Reset saved patches</string>
+    <string name="installed_info_patched_when">Patched %1$s</string>
+    <string name="installed_info_not_morphe_signed">Not Morphe-signed</string>
+    <string name="installed_info_apk_missing_title">Output APK missing</string>
+    <string name="installed_info_apk_missing_message">The patched APK is no longer on disk. Repatch to restore it.</string>
+    <string name="installed_info_modified_notice">This output APK was modified outside Morphe since it was patched.</string>
+    <string name="installed_info_section_information">Information</string>
+    <string name="installed_info_label_package">Package</string>
+    <string name="installed_info_label_patched_with">Patched with</string>
+    <string name="installed_info_label_integrity">Integrity</string>
+    <string name="installed_info_label_location">Location</string>
+    <string name="installed_info_section_sources">Sources</string>
+    <string name="installed_info_source_update_available">v%1$s → v%2$s available</string>
+    <string name="installed_info_applied_patches">Applied patches</string>
+    <string name="installed_info_applied_patches_value">%1$d across %2$s</string>
+    <string name="installed_info_mute_source_description">Stop offering patches from this source for this app</string>
+    <string name="installed_info_unmute_source_description">Offer patches from this source for this app again</string>
+    <!-- Settings -->
+    <string name="settings_output_folder_default_patched_apks">patched_apks (default)</string>
+    <!-- Source card -->
+    <string name="source_card_a11y_summary">%1$s, %2$s</string>
+    <string name="source_card_a11y_summary_failed">%1$s, %2$s, failed: %3$s</string>
+    <string name="source_card_view_details">View details</string>
+    <string name="source_card_view_details_description">View details for this source</string>
+    <string name="source_card_update_available_description">Update available: %1$s</string>
+    <string name="source_card_status_disabled">Disabled</string>
+    <string name="source_card_selected_quick_patch">Selected for Quick Patch</string>
+    <!-- Source details -->
+    <string name="source_details_patches_label">Patches</string>
+    <string name="source_details_open_in_browser">Open in browser</string>
+    <string name="source_details_enable">Enable</string>
+    <string name="source_details_disable">Disable</string>
+    <string name="source_details_use_this_source">Use this source</string>
+    <string name="source_details_version_unavailable">Unavailable</string>
+    <string name="source_details_update_available">%1$s available</string>
+    <string name="source_details_hide_changelog">Hide changelog</string>
+    <string name="source_details_show_changelog">Show changelog</string>
+    <string name="source_details_loading_changelog">Loading changelog…</string>
+    <string name="source_details_no_changelog">No changelog available for this source</string>
+    <!-- Source management -->
+    <string name="source_sheet_summary_quick_mode">%1$s · pick which one Quick Patch uses</string>
+    <string name="source_sheet_summary_multi_mode">%1$s · patches from every enabled source are unioned</string>
+    <!-- Home app cards: one state badge per card, resolved by HomeAppItem.status -->
+    <string name="home_badge_pending">Checking</string>
+    <string name="home_badge_unverified">Unverified</string>
+    <string name="home_badge_replaced">Unpatched</string>
+    <string name="home_badge_uninstalled">Uninstalled</string>
+    <string name="home_badge_update">Update</string>
+    <string name="home_card_not_patched_yet">Not patched yet</string>
+    <string name="home_card_on_device">on device</string>
+    <string name="home_card_hide">Hide from list</string>
+    <string name="home_card_unhide">Show in list</string>
+    <string name="home_hidden_show">Show hidden (%1$d)</string>
+    <string name="home_hidden_hide">Hide hidden</string>
+    <string name="home_card_semantics_version">version %1$s</string>
+    <string name="home_card_semantics_supported_version">newest supported version %1$s</string>
+    <string name="home_card_semantics_update_available">update available</string>
+    <!-- Installed app information dialog -->
+    <string name="installed_info_newest_supported_version">Newest supported version</string>
+    <string name="installed_info_original_package">Original package</string>
+    <string name="installed_info_patched_version">Patched version</string>
+    <string name="installed_info_device_version">Version on device</string>
+    <string name="installed_info_not_patched_title">Unpatched version installed</string>
+    <string name="installed_info_not_patched_description">Something other than Morphe's build holds this package name. Patch again to put it back.</string>
+    <string name="installed_info_unverified_notice">Morphe could not confirm that the app on the device is the build it produced.</string>
+    <string name="installed_info_artifact_unverified_notice">Morphe could not confirm this file's contents against the build it produced — its size still matches, but the check itself failed. Try again, or repatch if this keeps happening.</string>
+    <string name="installed_info_uninstalled_title">Not on the device</string>
+    <string name="installed_info_uninstalled_description">The patched APK is still here, so it can be installed again without patching.</string>
+    <string name="installed_info_patch_update_title">Patch update available</string>
+    <string name="installed_info_patch_update_description">A source that patched this app has published changes to it. Patch again to take them.</string>
+    <string name="installed_info_app_update_title">Newer app version supported</string>
+    <string name="installed_info_app_update_description">The sources now support a newer version of this app than the one that was patched.</string>
+    <string name="installed_info_version_move">%1$s to %2$s</string>
+    <string name="installed_info_whats_new">What's new</string>
+    <string name="installed_info_ignore_version">Ignore</string>
+    <string name="installed_info_stop_ignoring_version">Stop ignoring</string>
+    <string name="installed_info_action_patch">Patch</string>
+    <string name="installed_info_action_reinstall">Reinstall</string>
+    <string name="installed_info_changelog_title">%1$s changelog</string>
+    <string name="installed_info_source_removed">Removed source</string>
+    <string name="installed_info_source_unavailable_note">This source is no longer available. Patch names are shown as they were recorded.</string>
+    <string name="installed_info_section_patch_options">Patch options</string>
+    <string name="installed_info_no_device">No device connected</string>
+    <string name="installed_info_device_apk_path">Installed APK path</string>
+    <string name="changelog_general_changes">General changes</string>
+    <string name="changelog_empty">No new changes</string>
+    <string name="changelog_load_failed">Couldn't load the changelog</string>
+    <string name="changelog_stale">Showing saved changelog — couldn't refresh</string>
+    <string name="changelog_older_empty">No older releases</string>
+    <string name="changelog_loading_older">Loading older releases…</string>
+    <string name="changelog_older_failed">Couldn't load older releases</string>
+    <string name="installed_info_no_scoped_changelog">No changes specific to this app in this release.</string>
+
 </resources>

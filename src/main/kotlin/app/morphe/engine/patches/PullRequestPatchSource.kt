@@ -35,6 +35,8 @@ class PullRequestPatchSource(
             val release = resolvePrRelease()
             cachedRelease = release
             Result.success(listOf(release))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -46,6 +48,8 @@ class PullRequestPatchSource(
             val release = resolvePrRelease()
             cachedRelease = release
             Result.success(release)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -99,6 +103,8 @@ class PullRequestPatchSource(
             val file = http.downloadPrArtifactToFile(asset.downloadUrl, targetFile, pat, onProgress)
             Logger.info("GitHub PR: downloaded ${file.length()} bytes to ${file.absolutePath}")
             Result.success(file)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }

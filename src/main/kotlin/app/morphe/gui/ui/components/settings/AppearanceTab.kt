@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
@@ -25,12 +26,16 @@ import app.morphe.gui.LocalEnableParallax
 import app.morphe.gui.LocalGroupPatchesByCategory
 import app.morphe.gui.LocalSharpCorners
 import app.morphe.gui.data.repository.ConfigRepository
+import app.morphe.gui.LocalAppCardColors
+import app.morphe.gui.data.model.AppCardColorConfig
+import app.morphe.gui.data.model.AppCardColorValues
 import app.morphe.gui.data.repository.LanguageRepository
 import app.morphe.gui.ui.components.AppCard
 import app.morphe.gui.ui.components.LanguageDialog
-import app.morphe.gui.ui.components.LocalCardFills
 import app.morphe.gui.ui.components.MorpheChoiceChip
 import app.morphe.gui.ui.components.MorpheColorPickerCard
+import app.morphe.gui.ui.components.color.AppCardColorDialog
+import app.morphe.gui.util.toHexString
 import app.morphe.gui.ui.components.color.CustomSwatches
 import app.morphe.gui.ui.icons.MorpheIcons
 import app.morphe.gui.ui.theme.MorpheTheme
@@ -40,7 +45,6 @@ import app.morphe.gui.ui.theme.backgrounds.BackgroundType
 import app.morphe.morphe_desktop.generated.resources.*
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.StringResource
-import org.jetbrains.compose.resources.pluralStringResource
 import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.koinInject
 
@@ -218,26 +222,29 @@ internal fun AppearanceTab(
     SectionLabel(stringResource(Res.string.settings_section_app_cards), icon = MorpheIcons.Gradient)
     Spacer(Modifier.height(8.dp))
 
-    val cardFills = LocalCardFills.current
+    // One universal configuration for every app card. The preview below is a real card, and it
+    // is inside the theme that resolves them, so it already shows whatever is configured
+    var appCardColors by LocalAppCardColors.current
+    var showAppCardColorDialog by remember { mutableStateOf(false) }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         AppCard(
-            modifier = Modifier.width(72.dp).height(MorpheTheme.dimens.chipHeight),
+            modifier = Modifier.width(88.dp).height(38.dp),
             cornerRadius = MorpheTheme.corners.small,
-            fill = cardFills.globalFill,
             interactive = false,
         ) {}
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = stringResource(Res.string.settings_app_cards_color_all),
-                style = MorpheTheme.typography.bodySmall,
+                text = appCardColors.mode.label,
+                style = MorpheTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = stringResource(Res.string.settings_app_cards_color_all_desc),
+                text = appCardColors.mode.description,
                 style = MorpheTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -245,29 +252,36 @@ internal fun AppearanceTab(
         MorpheChoiceChip(
             text = stringResource(Res.string.customize),
             active = false,
-            onClick = { cardFills.requestEditGlobal() },
+            onClick = { showAppCardColorDialog = true },
         )
     }
 
-    if (cardFills.fills.isNotEmpty()) {
-        Spacer(Modifier.height(8.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = pluralStringResource(Res.plurals.settings_app_cards_override_count, cardFills.fills.size, cardFills.fills.size),
-                style = MorpheTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            MorpheChoiceChip(
-                text = stringResource(Res.string.settings_dialog_reset_button),
-                active = false,
-                onClick = { cardFills.onClearAll() },
-            )
-        }
+    if (showAppCardColorDialog) {
+        val values = appCardColors.values
+        AppCardColorDialog(
+            mode = appCardColors.mode,
+            accentColorHex = customAccentColorArgb?.let { Color(it).toHexString() }.orEmpty(),
+            startColorHex = values.startHex,
+            middleColorHex = values.middleHex,
+            endColorHex = values.endHex,
+            solidColorHex = values.solidHex,
+            onApply = { mode, start, middle, end, solid ->
+                val updated = AppCardColorConfig(
+                    mode = mode,
+                    values = AppCardColorValues(
+                        startHex = start,
+                        middleHex = middle,
+                        endHex = end,
+                        solidHex = solid,
+                    ),
+                )
+                // The in-memory state is what every card reads, so it moves first and the
+                // write follows; a failed write leaves the screen honest about what it shows
+                appCardColors = updated
+                scope.launch { configRepo.setAppCardColors(updated.mode, updated.values) }
+            },
+            onDismiss = { showAppCardColorDialog = false },
+        )
     }
 
     SettingsDivider(borderColor)

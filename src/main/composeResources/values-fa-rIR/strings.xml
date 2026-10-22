@@ -17,7 +17,6 @@
     <string name="none">هیچ‌کدام</string>
     <string name="select_image">یک تصویر انتخاب کنید</string>
     <string name="select_file">انتخاب فایل</string>
-    <string name="failed">ناموفق</string>
     <string name="copy">کپی</string>
     <string name="drag_to_reorder">برای مرتب‌سازی دوباره بکشید</string>
     <string name="off">خاموش</string>
@@ -73,9 +72,7 @@
     <!-- Home Screen - HomeHeader -->
     <!-- Home Screen - SupportedAppListRow -->
     <string name="home_app_row_any">هر نسخه‌ای</string>
-    <string name="home_app_row_update_available_badge">به‌روزرسانی موجود است</string>
     <!-- Home Screen - SupportedAppsListPane -->
-    <string name="home_list_no_apps_match">هیچ برنامه‌ای با «%1$s» مطابقت ندارد</string>
     <string name="home_sort_recommended">توصیه شده </string>
     <string name="home_sort_updates_first">ابتدا به‌روزرسانی‌های پچ</string>
     <string name="home_sort_recently_patched">به‌تازگی پچ‌شده</string>
@@ -86,9 +83,6 @@
     <string name="home_action_install">نصب</string>
     <string name="home_action_installing">در حال نصب…</string>
     <string name="home_action_update">به‌روزرسانی</string>
-    <string name="home_detail_downloading_percent">درحال دانلود %1$d%</string>
-    <string name="home_detail_details_title">جزئیات</string>
-    <string name="home_detail_section_options">گزینه‌ها</string>
     <string name="home_detail_output_size_label">اندازهٔ خروجی</string>
     <!-- Patches Screen -->
     <string name="patches_dialog_error_title">خطا</string>

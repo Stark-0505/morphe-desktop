@@ -88,6 +88,8 @@ dependencies {
     implementation(libs.about.libraries.core)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.junit.params)
+    testImplementation(libs.mockk)
+    testImplementation(libs.ktor.client.mock)
 }
 
 aboutLibraries {
@@ -132,6 +134,8 @@ tasks {
 
     test {
         useJUnitPlatform()
+        // Tests that exercise MorpheData-backed code (cache clearing) must never touch a real data dir.
+        environment("MORPHE_DATA_DIR", layout.buildDirectory.dir("test-morphe-data").get().asFile.absolutePath)
         testLogging {
             events("FAILED")
         }
@@ -167,6 +171,10 @@ tasks {
         from(listOf(rootProject.file("NOTICE"), rootProject.file("LICENSE"))) {
             into("META-INF")
         }
+        // The in-app "What's new" dialog reads its own CHANGELOG.md from the classpath
+        // (see ChangelogDialog.kt) — it must never read from the working directory, which
+        // is arbitrary once the app is packaged and launched from outside the repo.
+        from(rootProject.file("CHANGELOG.md"))
     }
 
     shadowJar {

@@ -17,7 +17,13 @@ import app.morphe.gui.ui.screens.patches.SelectionMode
 import app.morphe.morphe_desktop.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
 
-/** Quick-action chip row providing selection presets for the patch list. */
+/**
+ * Quick-action chip row above the patch list. Each chip is a one-click preset that
+ * sets the current selection. The chip whose state matches the current selection
+ * gets highlighted (accent border + tint) so the user can see at a glance what
+ * preset they're on. The last chip is not a preset but opens the copy-selection picker
+ * ([onCopyFrom]).
+ */
 @Composable
 internal fun SelectionModeChips(
     hasSavedSelection: Boolean,
@@ -26,6 +32,7 @@ internal fun SelectionModeChips(
     onApplyDefaults: () -> Unit,
     onApplyAll: () -> Unit,
     onApplyNone: () -> Unit,
+    onCopyFrom: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -60,6 +67,16 @@ internal fun SelectionModeChips(
             icon = MorpheIcons.RemoveDone,
             active = activeMode == SelectionMode.NONE,
             onClick = onApplyNone,
+            modifier = Modifier.weight(1f)
+        )
+        // An action rather than a preset: it opens the copy-selection picker, so it is
+        // never "active" (the selection it produces is just a CUSTOM one) and never disabled
+        // (the picker itself explains when there is nothing to copy from).
+        MorpheChoiceChip(
+            text = stringResource(Res.string.patch_selection_mode_copy_from),
+            icon = MorpheIcons.ContentCopy,
+            active = false,
+            onClick = onCopyFrom,
             modifier = Modifier.weight(1f)
         )
     }

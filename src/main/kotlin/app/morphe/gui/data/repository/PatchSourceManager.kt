@@ -5,6 +5,8 @@
 
 package app.morphe.gui.data.repository
 
+import app.morphe.engine.MultiSourceLoader
+import app.morphe.engine.options.PatchPreferencesRepository
 import app.morphe.engine.patches.PatchProvider
 import app.morphe.engine.patches.PatchRepository
 import app.morphe.engine.patches.RemotePatchSourceFactory
@@ -15,6 +17,9 @@ import io.ktor.client.HttpClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import app.morphe.engine.util.PersistenceFailures
+import java.io.IOException
+import kotlinx.coroutines.CancellationException
 
 /** Visible UI mode for coordinating patch loading across ViewModels. */
 enum class ActiveMode { QUICK, EXPERT }
@@ -22,8 +27,12 @@ enum class ActiveMode { QUICK, EXPERT }
 /** Manages [PatchRepository] instances and lifecycle for configured patch sources. */
 class PatchSourceManager(
     private val httpClient: HttpClient,
-    private val configRepository: ConfigRepository
+    private val configRepository: ConfigRepository,
+    private val sourceMuteRepository: SourceMuteRepository,
+    private val patchPreferencesRepository: PatchPreferencesRepository,
+    private val changelogRepository: ChangelogRepository,
 ) {
+
     private val repositories = mutableMapOf<String, PatchRepository>()
 
     private var cachedActiveRepo: PatchRepository? = null
@@ -143,6 +152,9 @@ class PatchSourceManager(
     /** Clears cached repository data and notifies observers. */
     fun notifyCacheCleared() {
         cachedActiveRepo?.clearCache()
+        // Patch files and changelogs are one cache to the user: clearing one must not leave
+        // the other serving data the user just asked to be rid of
+        changelogRepository.invalidateAll()
         _sourceVersion.value++
     }
 
@@ -170,11 +182,92 @@ class PatchSourceManager(
 
     /** Removes a patch source by ID and clears its cached repository. */
     suspend fun removeSource(id: String) {
+        // Looked up before the config write removes it, since invalidation needs
+        // the source's own URL to know which changelog cache entry is its
+        val removed = _allSources.value.firstOrNull { it.id == id }
         configRepository.removePatchSource(id)
         repositories.remove(id)
+        // Attribution for already-tracked apps lives on their records, not in this cache, so
+        // the source's changelog entries (stale fallback included) can go entirely
+        removed?.let { changelogRepository.invalidate(it, dropStale = true) }
+        // A removed source can't stay "muted for" anything, and a stale strike against a
+        // file that no longer exists would only ever misattribute a future unrelated source
+        // reusing the same id.
+        // The source itself is already removed, so a failed cleanup of its leftovers is reported
+        // rather than allowed to undo or abort the removal.
+        try {
+            sourceMuteRepository.resetForSource(id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            PersistenceFailures.report("the removed source's mute settings", e)
+        }
+        try {
+            patchPreferencesRepository.resetForSource(id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            PersistenceFailures.report("the removed source's saved patch selections", e)
+        }
+        MultiSourceLoader.forgetLoadGuardState(id)
         refreshEnabledSources()
         _sourceVersion.value++
     }
+
+    // ── Source muting ────────────────────────────────────────────────────────
+    //
+    // Narrows which of the *enabled* sources are offered for one particular app, without
+    // touching that source for anything else. See [SourceMuteRepository] for the persisted
+    // state and the invariants (a mute is never recorded if it would leave an app with
+    // nothing to patch from).
+
+    /**
+     * The enabled sources offered for [packageName], excluding its muted sources. If the
+     * persisted mute state would otherwise hide every enabled source (for example after a
+     * source was removed or coverage changed), retain the full list as a safe fallback.
+     */
+    suspend fun effectiveSourcesFor(packageName: String): List<PatchSource> {
+        val muted = sourceMuteRepository.getMutedFor(packageName)
+        val filtered = cachedEnabledSources.filterNot { it.id in muted }
+        return filtered.ifEmpty { cachedEnabledSources }
+    }
+
+    suspend fun mutedSourceIdsForApp(packageName: String): Set<String> =
+        sourceMuteRepository.getMutedFor(packageName)
+
+    /**
+     * Mutes [sourceId] for [packageName], unless doing so would remove the last source
+     * known to have patches for that app. Returns false without persisting when it would.
+     *
+     * @param coveredByThisApp The set of enabled source ids that actually have a patch
+     *   targeting [packageName] (e.g. from `EnabledSourcesLoader.Result.patchesBySource`
+     *   filtered by each patch's compatible packages), when the caller has already computed it.
+     *   When omitted, falls back to checking whether more than one source is currently
+     *   offered for the app; this is necessarily coarser because it cannot inspect patch
+     *   coverage for each source.
+     */
+    suspend fun muteSourceForApp(
+        packageName: String,
+        sourceId: String,
+        coveredByThisApp: Set<String>? = null,
+    ): Boolean {
+        if (coveredByThisApp != null) {
+            val alreadyMuted = sourceMuteRepository.getMutedFor(packageName)
+            // Only block muting when this source currently contributes patches and no
+            // other contributing source remains unmuted. A source with no applicable
+            // patches can be muted without making the app unpatchable.
+            val remainingSources = coveredByThisApp - alreadyMuted - sourceId
+            if (sourceId in coveredByThisApp && remainingSources.isEmpty()) return false
+        } else {
+            val currentlyOffered = effectiveSourcesFor(packageName).map { it.id }.toSet()
+            if (currentlyOffered.size <= 1 && sourceId in currentlyOffered) return false
+        }
+        sourceMuteRepository.mute(packageName, sourceId)
+        return true
+    }
+
+    suspend fun unmuteSourceForApp(packageName: String, sourceId: String) =
+        sourceMuteRepository.unmute(packageName, sourceId)
 
     /** Persists reordered patch source IDs and updates active snapshot. */
     suspend fun reorderSources(orderedIds: List<String>) {
@@ -185,8 +278,13 @@ class PatchSourceManager(
 
     /** Updates patch source configuration and invalidates cached repository. */
     suspend fun updateSource(updated: PatchSource) {
+        // Captured before the write: after it, the old URL is unreachable from the config,
+        // and its changelog would sit in the cache under a URL nothing points at any more
+        val previous = _allSources.value.firstOrNull { it.id == updated.id }
         configRepository.updatePatchSource(updated)
         repositories.remove(updated.id)
+        previous?.let { changelogRepository.invalidate(it, dropStale = true) }
+        changelogRepository.invalidate(updated)
         refreshEnabledSources()
         _sourceVersion.value++
     }

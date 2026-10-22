@@ -195,6 +195,11 @@ class PatchingViewModel(
                     elapsedSec = formatElapsed(elapsedMs)
                 )
                 Logger.info("Patching completed: ${engineResult.outputPath}")
+                // The patch itself succeeded, so a failed history write is a warning, never a
+                // failed patch (the engine already logged why).
+                if (config.recordHistory && engineResult.historyRecord == null) {
+                    addLog("Patched, but couldn't save it to Your apps — see the log for details", LogLevel.WARNING)
+                }
             } else {
                 val reason = engineResult.failureDetail
                     ?: resolveStepFailureMessage(engineResult)

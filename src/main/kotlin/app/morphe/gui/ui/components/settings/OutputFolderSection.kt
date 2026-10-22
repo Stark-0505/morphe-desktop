@@ -71,7 +71,7 @@ internal fun OutputFolderSection(
                 contentAlignment = Alignment.CenterStart
             ) {
                 Text(
-                    text = outputDir?.name ?: stringResource(Res.string.settings_output_folder_default),
+                    text = outputDir?.name ?: stringResource(Res.string.settings_output_folder_default_patched_apks),
                     style = MorpheTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
                     maxLines = 1,

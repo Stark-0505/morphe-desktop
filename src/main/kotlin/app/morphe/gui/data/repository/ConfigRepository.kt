@@ -6,8 +6,9 @@
 package app.morphe.gui.data.repository
 
 import app.morphe.engine.MorpheData
-import app.morphe.engine.config.mergeAndSaveJsonObject
+import app.morphe.engine.util.AtomicFiles
 import app.morphe.engine.util.Logger
+import app.morphe.engine.util.PersistenceFailures
 import app.morphe.engine.util.isDevTag
 import app.morphe.gui.data.model.AppConfig
 import app.morphe.gui.data.model.DEFAULT_PATCH_SOURCE
@@ -16,11 +17,18 @@ import app.morphe.gui.data.model.SourceVersionPref
 import app.morphe.gui.data.model.PatchSource
 import app.morphe.gui.data.model.UpdateChannelPreference
 import app.morphe.gui.data.model.MorpheFill
+import app.morphe.gui.data.model.AppCardColorDefaults
+import app.morphe.gui.data.model.AppCardColorMode
+import app.morphe.gui.data.model.AppCardColorValues
 import app.morphe.gui.ui.theme.ThemePreference
+import app.morphe.gui.util.toHexString
+import androidx.compose.ui.graphics.Color
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
 
 /**
@@ -37,6 +45,10 @@ open class ConfigRepository {
 
     private var cachedConfig: AppConfig? = null
 
+    /** Set when an unreadable config.json could not be moved aside: saving would destroy it. */
+    @Volatile
+    private var persistenceBlocked = false
+
     /**
      * Load config from file, or return default if not exists.
      */
@@ -52,7 +64,7 @@ open class ConfigRepository {
         try {
             if (configFile.exists()) {
                 val content = configFile.readText()
-                val config = json.decodeFromString<AppConfig>(content)
+                val config = migrateCardFills(json.decodeFromString<AppConfig>(content))
                 cachedConfig = config
                 Logger.info("Config loaded from ${configFile.absolutePath}")
                 config
@@ -65,7 +77,26 @@ open class ConfigRepository {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Logger.error("Failed to load config, using defaults", e)
+            // Corrupt/incompatible config: every patch source, preference and saved
+            // choice lives in this one file, so silently overwriting it with defaults
+            // on the next save would be the worst possible answer to a read failure.
+            // Move it aside first — same recovery contract as PatchedAppStore and
+            // OriginalApkRepository — so whatever is still readable in it survives
+            // for the user or a future migration to recover from.
+            val preserved = runCatching { AtomicFiles.quarantine(configFile) }.getOrNull()
+            if (preserved == null) {
+                // Starting from defaults is fine for this session, but saving would now overwrite
+                // an unreadable file we could not preserve. Block writes instead (see saveConfig).
+                persistenceBlocked = true
+            }
+            Logger.error(
+                if (preserved != null) {
+                    "Failed to load config (${e.message}); preserved it as ${preserved.name} and starting from defaults"
+                } else {
+                    "Failed to load config (${e.message}); could not preserve the original, starting from defaults"
+                },
+                e,
+            )
             AppConfig()
         }
     }
@@ -73,16 +104,70 @@ open class ConfigRepository {
     /**
      * Save config to file.
      */
-    suspend fun saveConfig(config: AppConfig) = withContext(Dispatchers.IO) {
+    /**
+     * Persists [config], merged into the shared `config.json`. Returns true only if it is on disk.
+     *
+     * On failure it returns false and reports to [PersistenceFailures] (which the app surfaces to
+     * the user) instead of throwing, because many fire-and-forget settings changes call this and
+     * an uncaught exception there would take down a UI coroutine. Either way the failure is never
+     * silent, and the cached config only advances after a successful write, so the in-memory
+     * settings never claim something disk does not have.
+     *
+     * An unreadable existing file is moved aside first (never overwritten); if that is impossible
+     * nothing is written. Cancellation propagates.
+     */
+    suspend fun saveConfig(config: AppConfig): Boolean = withContext(Dispatchers.IO) {
         try {
+            if (persistenceBlocked) {
+                throw java.io.IOException("config.json is unreadable and could not be preserved, so it is not being overwritten")
+            }
             val configFile = MorpheData.configFile
+            val existingObj = if (configFile.exists()) {
+                try {
+                    json.parseToJsonElement(configFile.readText()).jsonObject
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Merging into nothing would erase the engine-owned keys that share this file.
+                    val preserved = try {
+                        AtomicFiles.quarantine(configFile)
+                    } catch (q: java.io.IOException) {
+                        persistenceBlocked = true
+                        throw q
+                    }
+                    Logger.warn("config.json was unreadable (${e.message}); preserved it as ${preserved.name}")
+                    JsonObject(emptyMap())
+                }
+            } else JsonObject(emptyMap())
+
             val guiObj = json.encodeToJsonElement(AppConfig.serializer(), config).jsonObject
-            mergeAndSaveJsonObject(configFile, json, guiObj)
+            val mergedMap = existingObj.toMutableMap()
+            guiObj.forEach { (k, v) -> mergedMap[k] = v }
+            val mergedJson = json.encodeToString(JsonObject.serializer(), JsonObject(mergedMap))
+
+            // config.json is shared with EngineConfigRepository, so the GUI keys are merged into
+            // what is already there. Written atomically: a crash mid-write must never leave this
+            // file — the source of every setting Morphe has — truncated or unreadable.
+            configFile.parentFile?.mkdirs()
+            AtomicFiles.write(configFile, mergedJson)
             cachedConfig = config
             Logger.info("Config saved to ${configFile.absolutePath}")
+            true
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            Logger.error("Failed to save config", e)
+            PersistenceFailures.report("settings", e)
+            false
         }
+    }
+
+    /**
+     * Update language preference.
+     */
+    /** Whether the original APK of a patched app is kept in Morphe's managed storage. Returns whether it was saved. */
+    suspend fun setSaveOriginalApks(enabled: Boolean): Boolean {
+        val current = loadConfig()
+        return saveConfig(current.copy(saveOriginalApks = enabled))
     }
 
     suspend fun setLanguage(language: String) {
@@ -105,22 +190,86 @@ open class ConfigRepository {
         saveConfig(current.copy(homeAppSortMode = mode))
     }
 
-    suspend fun setGlobalCardFill(fill: MorpheFill?) {
+    /**
+     * Persists the whole app card color configuration in one write: the mode together with all
+     * four colors. The colors are kept even for [AppCardColorMode.DEFAULT], so switching modes
+     * back and forth does not discard them.
+     *
+     * This is the only entry point that writes app card colors. The editor holds a draft and
+     * calls it once on Save, rather than writing each movement of the picker.
+     */
+    suspend fun setAppCardColors(mode: AppCardColorMode, values: AppCardColorValues) {
         val current = loadConfig()
-        saveConfig(current.copy(globalCardFill = fill))
+        saveConfig(
+            current.copy(
+                appCardColorMode = mode.name,
+                customAppCardColors = AppCardColorDefaults.encodeColorValues(values),
+            )
+        )
     }
 
-    suspend fun clearCardFills() {
-        val current = loadConfig()
-        saveConfig(current.copy(cardFills = emptyMap()))
-    }
+    /**
+     * Moves a config written before app card colors became a universal configuration onto the
+     * new fields, once.
+     *
+     * The old global fill maps cleanly: a solid becomes [AppCardColorMode.SOLID], a gradient's
+     * outer and middle stops become the three stops of [AppCardColorMode.GRADIENT], and the
+     * accent fill becomes [AppCardColorMode.ACCENT]. Per-app fills have nowhere to go — colors
+     * are one choice for every card now — so they are dropped rather than guessed at.
+     *
+     * A config that already carries a mode or colors is left alone, so this cannot overwrite a
+     * choice made since upgrading.
+     */
+    private fun migrateCardFills(config: AppConfig): AppConfig {
+        val legacy = config.globalCardFill
+        if (legacy == null && config.cardFills.isEmpty()) return config
 
-    suspend fun setCardFill(packageName: String, fill: MorpheFill?) {
-        val current = loadConfig()
-        val updated = current.cardFills.toMutableMap().apply {
-            if (fill == null) remove(packageName) else put(packageName, fill)
+        val alreadyConfigured = config.appCardColorMode != AppCardColorMode.DEFAULT.name ||
+            config.customAppCardColors.isNotBlank()
+
+        val migrated = if (alreadyConfigured) {
+            config
+        } else {
+            when (legacy) {
+                is MorpheFill.Accent -> config.copy(appCardColorMode = AppCardColorMode.ACCENT.name)
+
+                is MorpheFill.Solid -> config.copy(
+                    appCardColorMode = AppCardColorMode.SOLID.name,
+                    customAppCardColors = AppCardColorDefaults.encodeColorValues(
+                        AppCardColorValues(solidHex = Color(legacy.argb).toHexString())
+                    ),
+                )
+
+                is MorpheFill.Gradient -> {
+                    val ordered = legacy.stops.sortedBy { it.position }
+                    if (ordered.isEmpty()) {
+                        config
+                    } else {
+                        val start = Color(ordered.first().argb)
+                        val middle = Color(ordered[ordered.size / 2].argb)
+                        val end = Color(ordered.last().argb)
+                        config.copy(
+                            appCardColorMode = AppCardColorMode.GRADIENT.name,
+                            customAppCardColors = AppCardColorDefaults.encodeColorValues(
+                                AppCardColorValues(
+                                    startHex = start.toHexString(),
+                                    middleHex = middle.toHexString(),
+                                    endHex = end.toHexString(),
+                                    solidHex = middle.toHexString(),
+                                )
+                            ),
+                        )
+                    }
+                }
+
+                // An image fill was never something a card could resolve per app, and there is
+                // no color to carry over from one
+                else -> config
+            }
         }
-        saveConfig(current.copy(cardFills = updated))
+
+        Logger.info("Migrated legacy card fills to the universal app card color configuration")
+        return migrated.copy(globalCardFill = null, cardFills = emptyMap())
     }
 
     suspend fun setBackgroundType(type: String) {
@@ -292,6 +441,33 @@ open class ConfigRepository {
         val current = loadConfig()
         if (current.homeAppListFilter == value) return
         saveConfig(current.copy(homeAppListFilter = value))
+    }
+
+    /**
+     * Hide or unhide one home card, by its [HomeAppItem][app.morphe.gui.ui.screens.home.HomeAppItem]
+     * id. Hiding never touches the patched-app history: the card comes back
+     * exactly as it was.
+     */
+    suspend fun setHomeAppHidden(id: String, hidden: Boolean) {
+        val current = loadConfig()
+        val updated = if (hidden) current.hiddenHomeApps + id else current.hiddenHomeApps - id
+        if (updated.toSet() == current.hiddenHomeApps.toSet()) return
+        saveConfig(current.copy(hiddenHomeApps = updated.distinct()))
+    }
+
+    /**
+     * Answer the offer to rebuild [packageName] at [version], leaving later
+     * versions to be offered. A null [version] takes the refusal back.
+     */
+    suspend fun setIgnoredSupportedVersion(packageName: String, version: String?) {
+        val current = loadConfig()
+        val updated = if (version == null) {
+            current.ignoredSupportedVersions - packageName
+        } else {
+            current.ignoredSupportedVersions + (packageName to version)
+        }
+        if (updated == current.ignoredSupportedVersions) return
+        saveConfig(current.copy(ignoredSupportedVersions = updated))
     }
 
     /** Toggles patch source enablement, ensuring at least one source remains active. */

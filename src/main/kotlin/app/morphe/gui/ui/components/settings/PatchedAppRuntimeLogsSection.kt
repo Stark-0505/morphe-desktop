@@ -17,7 +17,7 @@ import androidx.compose.ui.unit.dp
 import app.morphe.engine.MorpheData
 import app.morphe.engine.util.AdbException
 import app.morphe.engine.util.AdbManager
-import app.morphe.engine.util.Logger
+import app.morphe.gui.util.revealInFileManager
 import app.morphe.gui.ui.components.MorpheButton
 import app.morphe.gui.ui.components.MorpheButtonSize
 import app.morphe.gui.ui.components.MorpheButtonVariant
@@ -26,7 +26,7 @@ import app.morphe.gui.ui.theme.MorpheTheme
 import app.morphe.gui.util.DeviceMonitor
 import app.morphe.gui.util.getUserMessage
 import app.morphe.morphe_desktop.generated.resources.*
-import java.awt.Desktop
+import org.koin.compose.koinInject
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -56,7 +56,8 @@ internal fun PatchedAppRuntimeLogsSection(
     val monitorState by DeviceMonitor.state.collectAsState()
     val selectedDevice = monitorState.selectedDevice
     val scope = rememberCoroutineScope()
-    val adbManager = remember { AdbManager() }
+    // Shared with DeviceMonitor's own polling — see DeviceMonitor.adbManager's doc.
+    val adbManager = koinInject<AdbManager>()
     var status by remember { mutableStateOf<RuntimeLogsStatus>(RuntimeLogsStatus.Idle) }
 
     val isWorking = status is RuntimeLogsStatus.Clearing || status is RuntimeLogsStatus.Saving
@@ -160,15 +161,7 @@ internal fun PatchedAppRuntimeLogsSection(
                             variant = MorpheButtonVariant.GHOST,
                             size = MorpheButtonSize.COMPACT,
                             customColor = MorpheTheme.colors.primary,
-                            onClick = {
-                                try {
-                                    if (Desktop.isDesktopSupported()) {
-                                        Desktop.getDesktop().open(s.file.parentFile)
-                                    }
-                                } catch (e: Exception) {
-                                    Logger.error("Failed to reveal logs folder", e)
-                                }
-                            }
+                            onClick = { scope.launch { revealInFileManager(s.file.parentFile) } }
                         )
                     }
                 }

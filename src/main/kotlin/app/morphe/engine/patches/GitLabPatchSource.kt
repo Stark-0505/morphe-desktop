@@ -52,6 +52,8 @@ class GitLabPatchSource(
             val releases = parseReleases(raw)
             Logger.info("GitLab: fetched ${releases.size} releases from $repoPath")
             Result.success(releases)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Logger.warn("GitLab releases fetch error for $repoPath: ${e.message}")
             Result.failure(e)
@@ -66,6 +68,8 @@ class GitLabPatchSource(
             val bundle: PatchesBundle = http.request(url)
             Logger.info("GitLab: bundle ($branch) → v${bundle.version} @ ${bundle.downloadUrl}")
             Result.success(bundle.toRelease(prerelease))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             val reason = (e as? HttpService.HttpException)?.status?.toString() ?: (e.message ?: "unknown error")
             Logger.info("GitLab: no usable patches-bundle.json ($branch) for $repoPath ($reason); falling back to releases API")
@@ -85,6 +89,8 @@ class GitLabPatchSource(
             }
             Logger.info("GitLab: wrote ${file.length()} bytes to ${file.absolutePath}")
             Result.success(file)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }

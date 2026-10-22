@@ -8,7 +8,45 @@ package app.morphe.engine
 import app.morphe.engine.util.Logger
 import java.io.File
 
-/** Resolves storage paths for runtime data, prioritizing JAR-adjacent storage with home directory fallback. */
+/**
+ * Single source of truth for where Morphe stores its runtime data on disk.
+ *
+ * **Primary location**: a `morphe-data/` folder created **next to the running
+ * JAR**. Survives upgrades (multiple JAR versions side-by-side share one
+ * folder), trivially findable for users (just `cd` to where the JAR lives),
+ * portable across drives/USB sticks.
+ *
+ * **Fallback location**: `~/morphe/`. Used when the primary path is
+ * unreachable — most commonly when running from an IDE (`./gradlew run`)
+ * where the "JAR location" resolves to a `build/classes/` directory that
+ * would get wiped by `./gradlew clean`. Also covers the (rare) case of a
+ * read-only JAR install location.
+ *
+ * Layout once populated (portable install):
+ * ```
+ * morphe-desktop-<version>-all.jar
+ * patched_apks/{appName}/                        # default output for patched APKs (user-facing)
+ * morphe-data/
+ *   patches/{owner}-{repo}/v1.5.0__patches.mpp   # downloaded .mpp files
+ *   logs/                                        # app logs
+ *   avatars/{urlHash}.avatar                     # cached patch-source owner avatars
+ *   icons/{packageName}/                         # user-created custom app icons (persistent)
+ *   original-apks/                               # Morphe-managed original APKs, used for repatching
+ *   config.json                                  # GUI preferences + sources
+ *   tmp/patching-{timestamp}/                    # per-session patcher scratch
+ *   morphe.keystore                              # shared default signing key
+ * ```
+ *
+ * A single shared keystore is intentional: Android refuses updates whose
+ * signatures don't match the installed app, so per-app or per-output-APK
+ * keystores would break "re-patch and reinstall over the old version." A
+ * user who wants their own signing identity can point at a custom keystore
+ * in Settings, which overrides this default.
+ *
+ * All paths are computed lazily so the JVM is fully bootstrapped (classloader,
+ * security manager, etc.) before we probe for the JAR location. The
+ * resolution runs **at most once per JVM** — the lazy property caches.
+ */
 object MorpheData {
     private val resolution: Resolution by lazy { resolveRoot() }
 
@@ -26,11 +64,39 @@ object MorpheData {
     /** Directory for log files. */
     val logsDir: File by lazy { File(root, "logs").also { it.mkdirs() } }
 
+    /** Cached patch-source owner avatars (GitHub/GitLab), keyed by a hash of their
+     *  URL. Purely a re-fetchable cache, so it IS wiped by clear-cache, same as
+     *  [patchesDir]. See `AvatarRepository`. */
+    val avatarsDir: File by lazy { File(root, "avatars").also { it.mkdirs() } }
+
+    /** Google Play app icons plus the resolution index, keyed by a hash of the package id
+     *  (see `app.morphe.gui.data.appicon`). Re-fetchable, so clear-cache wipes it. Not to be
+     *  confused with [iconsDir] (Icon Studio's user-authored output), which is never touched. */
+    val appIconsDir: File by lazy { File(root, "app-icons").also { it.mkdirs() } }
+
     /** Directory for custom app icons. */
     val iconsDir: File by lazy { File(root, "icons").also { it.mkdirs() } }
 
     /** Directory for temporary patcher scratch files. */
     val tmpDir: File by lazy { File(root, "tmp").also { it.mkdirs() } }
+
+    /**
+     * Morphe-managed pre-patch (original) APKs, one per package, the canonical input
+     * for a later repatch — see `app.morphe.engine.OriginalApkRepository`. Ported
+     * concept from morphe-manager's `Filesystem.originalApksDir`. Deliberately
+     * NOT wiped by clear-cache: after a patch this holds the only copy of the
+     * user's original file, so it isn't disposable cache content.
+     */
+    val originalApksDir: File by lazy { File(root, "original-apks").also { it.mkdirs() } }
+
+    /**
+     * Default destination for patched APKs, used when the user hasn't configured an
+     * output folder. Deliberately kept apart from [root]: these are user-facing
+     * deliverables, not app data. In the portable layout it sits beside the JAR
+     * (`<bundleRoot>/patched_apks`); with no bundle (fallback / IDE /
+     * `MORPHE_DATA_DIR`) it is `<root>/patched_apks`.
+     */
+    val patchedApksDir: File by lazy { File(bundleRoot ?: root, "patched_apks").also { it.mkdirs() } }
 
     /** Configuration file path. */
     val configFile: File get() = File(root, "config.json")

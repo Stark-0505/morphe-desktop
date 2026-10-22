@@ -8,6 +8,7 @@ package app.morphe.gui.ui.screens.quick
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.morphe.engine.MorpheConstants
+import app.morphe.engine.OriginalApkRepository
 import app.morphe.engine.PatchEngine
 import app.morphe.engine.UpdateInfo
 import app.morphe.engine.apk.ApkInspector
@@ -55,6 +56,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.getPluralString
 import org.jetbrains.compose.resources.getString
+import app.morphe.engine.util.PersistenceFailures
+import java.io.IOException
 import java.util.Locale
 
 /** ViewModel for Quick Patch mode. */
@@ -64,6 +67,8 @@ class QuickPatchViewModel(
     private val updateCheckRepository: UpdateCheckRepository,
     private val seenPatchesRepository: SeenPatchesRepository = SeenPatchesRepository(),
     private val engineConfigRepository: EngineConfigRepository = EngineConfigRepository.shared,
+    /** When set, a successful patch archives the original APK here (see [app.morphe.engine.PatchHistoryRecorder]). */
+    private val originalApkRepository: OriginalApkRepository? = null,
 ) : ViewModel() {
 
     private var patchRepository: PatchRepository = patchSourceManager.getActiveRepositorySync()
@@ -527,6 +532,10 @@ class QuickPatchViewModel(
                     originalPackageName = apkInfo.packageName,
                     displayName = apkInfo.displayName,
                     sourcesSnapshot = sources,
+                    appIconColorHex = cachedSupportedApps
+                        .firstOrNull { it.packageName == apkInfo.packageName }
+                        ?.appIconColor,
+                    originalApkRepository = originalApkRepository,
                 ),
             )
 
@@ -584,6 +593,13 @@ class QuickPatchViewModel(
                     statusMessage = ""
                 )
                 Logger.info("Quick mode: Patching completed, $outputPath (${engineResult.appliedPatches.size} patches)")
+                // The patch itself succeeded, so a failed history write is a warning, never a
+                // failed patch (the engine already logged why).
+                if (engineConfig.recordHistory && engineResult.historyRecord == null) {
+                    _uiState.update { state ->
+                        state.copy(logs = state.logs + LogEntry("Patched, but couldn't save it to Your apps — see the log for details", LogLevel.WARNING))
+                    }
+                }
                 recordSeenPatches(apkInfo.packageName)
             } else {
                 val errorMsg = engineResult.failureDetail
@@ -601,13 +617,22 @@ class QuickPatchViewModel(
     /** Records patches offered by each source for this app to track newly added patches. */
     private suspend fun recordSeenPatches(packageName: String) = withContext(Dispatchers.IO) {
         val sources = cachedSourcesResult?.resolved ?: return@withContext
+        var failure: IOException? = null
         sources.forEach { resolved ->
             val path = resolved.patchFile?.absolutePath ?: return@forEach
             val names = runCatching { SupportedAppCatalog.loadPatches(File(path), packageName) }.getOrNull()
                 ?.mapTo(mutableSetOf()) { it.name }
                 ?: return@forEach
-            seenPatchesRepository.save(packageName, resolved.source.name, names)
+            try {
+                seenPatchesRepository.save(packageName, resolved.source.id, names)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                failure = e
+            }
         }
+        // Bookkeeping only (it drives "new patch" hints), so one report for the whole pass is enough.
+        failure?.let { PersistenceFailures.report("the list of patches you have seen", it) }
     }
 
     /** Parses progress from patcher log lines. */

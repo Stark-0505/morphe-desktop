@@ -5,63 +5,127 @@
 
 package app.morphe.gui.ui.components
 
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.hoverable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsHoveredAsState
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollbarAdapter
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.PointerIcon
-import androidx.compose.ui.input.pointer.pointerHoverIcon
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.zIndex
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import app.morphe.engine.config.EngineConfigRepository
 import app.morphe.engine.patches.PatchResolver.Channel
 import app.morphe.gui.data.model.PatchSource
-import app.morphe.gui.data.model.PatchSourceType
 import app.morphe.gui.ui.icons.MorpheIcons
-import app.morphe.gui.ui.theme.MorpheMotion
-import app.morphe.gui.ui.theme.MorpheTheme
-import app.morphe.gui.ui.theme.channelColor
+import app.morphe.gui.ui.theme.LocalMorpheAccents
+import app.morphe.gui.ui.theme.LocalMorpheCorners
+import app.morphe.gui.ui.theme.LocalMorpheFont
+import app.morphe.gui.ui.theme.MorpheOutline
+import app.morphe.gui.util.EnabledSourcesLoader
 import app.morphe.morphe_desktop.generated.resources.*
-import java.awt.Cursor
-import java.io.File
-import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+import org.jetbrains.compose.resources.pluralStringResource
 import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.koinInject
 
-/** Modal sheet for managing, reordering, adding, and toggling patch sources. */
-/** Selection mode determining whether sources are toggled independently or mutually exclusively. */
+/**
+ * Layout constants for the responsive card grid. Kept together so the dialog's own
+ * width floor and the grid's column-count formula (in [SourceManagementSheet]) are
+ * mathematically tied to the same numbers instead of two independently hand-picked
+ * breakpoint tables that can silently drift apart.
+ */
+private val MIN_CARD_WIDTH = 210.dp
+private val CARD_SPACING = 10.dp
+private const val MAX_COLUMNS = 4
+private val DIALOG_CONTENT_PADDING = 20.dp
+private val GRID_SCROLLBAR_GUTTER = 14.dp
+
+/**
+ * How much of the window this dialog occupies, and its absolute bounds. Deliberately
+ * modest (was 0.86f/1080dp) so the dialog reads as a distinct floating panel with real
+ * margin around it, rather than nearly the size of the window it sits over — which is
+ * also part of why it needs its own border accent below, since a same-size dark panel
+ * over a dark home screen has almost nothing to visually separate it otherwise.
+ */
+private const val DIALOG_WINDOW_SCALE = 0.78f
+private val DIALOG_MAX_WIDTH = 960.dp
+private val DIALOG_MAX_HEIGHT = 680.dp
+private val DIALOG_MIN_HEIGHT = 320.dp
+
+/**
+ * How cards in the management sheet behave:
+ * - [MULTI_TOGGLE]: each card has an enable Switch. Used by Expert mode where
+ *   patches from all enabled sources are unioned.
+ * - [SINGLE_SELECT]: each card is a radio. Used by Quick Patch mode where exactly
+ *   one source is "active" at a time.
+ */
 enum class SourceSheetMode { MULTI_TOGGLE, SINGLE_SELECT }
 
-/** Cursor displayed over source drag handles. */
-private val DragMoveCursor = PointerIcon(Cursor(Cursor.MOVE_CURSOR))
+/**
+ * A source's persisted [PatchSource] plus its resolved runtime state, projected once
+ * per render instead of three separate map lookups (`sourceVersions[id]`,
+ * `sourceChannels[id]`, `sourceErrors[id]`) scattered across every card and the details
+ * dialog. The ingestion side (ViewModel → these parallel maps, see
+ * [EnabledSourcesLoader.sourceVersionMap] and friends) is left alone — this projection
+ * is applied at the point it actually removes duplication: rendering.
+ */
+internal data class PatchSourceUiState(
+    val source: PatchSource,
+    val version: String?,
+    val channel: Channel?,
+    val error: String?,
+    val isLoading: Boolean,
+)
 
+/**
+ * Patch-source management: a responsive card grid (see [SourceCard]) with a
+ * per-source [SourceDetailsDialog] one level down for everything that doesn't need to
+ * be visible at a glance. Summoned from the home header `+` button in Expert mode, and
+ * from Quick Patch's source picker in single-select mode.
+ *
+ * Caller wires actions to [PatchSourceManager][app.morphe.gui.data.repository.PatchSourceManager]
+ * / config-repository equivalents. Nothing about those semantics changed in this redesign —
+ * enabling, adding, editing, removing, reordering and refreshing a source all still go through
+ * exactly the same callbacks and the same config-backed persistence as before.
+ */
 @Composable
 fun SourceManagementSheet(
     sources: List<PatchSource>,
@@ -69,7 +133,6 @@ fun SourceManagementSheet(
     onAdd: (PatchSource) -> Unit,
     onEdit: (PatchSource) -> Unit,
     onRemove: (id: String) -> Unit,
-    onOpenPatches: (sourceId: String) -> Unit,
     onDismiss: () -> Unit,
     /** Reloads all sources to pick up newly built or updated local patches. */
     onRefresh: () -> Unit = {},
@@ -80,31 +143,39 @@ fun SourceManagementSheet(
     sourceVersions: Map<String, String?> = emptyMap(),
     /** Map of source ID to channel classification for badge rendering. */
     sourceChannels: Map<String, Channel?> = emptyMap(),
-    /** Indicates whether source patches are currently being loaded. */
+    /** True while patches are being (re)loaded. Drives the per-card spinner shown
+     *  in place of the version/badge for enabled sources whose data isn't yet
+     *  in [sourceVersions]. */
     isLoading: Boolean = false,
-    /** Map of source ID to failure error message. */
+    /** sourceId → load-failure message for sources that failed to load. Drives the per-card
+     *  FAILED state, so a partial multi-source failure shows exactly which source broke. */
     sourceErrors: Map<String, String> = emptyMap(),
+    /** sourceId → that source's OWN patch count (not the cross-source union). See
+     *  [EnabledSourcesLoader.sourcePatchCountMap]. */
+    sourcePatchCounts: Map<String, Int> = emptyMap(),
+    /** sourceId → newer version available in the source's followed channel, when it
+     *  differs from what's resolved. See [EnabledSourcesLoader.sourceUpdateAvailableMap]. */
+    sourceUpdateAvailable: Map<String, String> = emptyMap(),
     /** Selection mode determining row interaction semantics. */
     mode: SourceSheetMode = SourceSheetMode.MULTI_TOGGLE,
+    /** sourceId of the currently picked source, used only when [mode] is SINGLE_SELECT. */
     activeSourceId: String? = null,
+    /** Called when the user picks a source, used only when [mode] is SINGLE_SELECT. */
     onSelectSingle: (sourceId: String) -> Unit = {},
 ) {
-    var showAddDialog by remember { mutableStateOf(false) }
-    var editingSource by remember { mutableStateOf<PatchSource?>(null) }
+    val corners = LocalMorpheCorners.current
+    val font = LocalMorpheFont.current
+    val accents = LocalMorpheAccents.current
 
-    // Live ordering rendered by the UI.
-    val density = LocalDensity.current
-    val rowSpacingPx = with(density) { 8.dp.toPx() }
+    var showAddDialog by remember { mutableStateOf(false) }
+    var detailsSourceId by remember { mutableStateOf<String?>(null) }
+
+    // Live ordering the grid renders from. Reseeds only when the actual id sequence
+    // from config changes (List equals is structural), so a reorder we just persisted
+    // doesn't get clobbered by the next recomposition before the ViewModel round-trips.
     val sourcesById = remember(sources) { sources.associateBy { it.id } }
     var workingOrder by remember { mutableStateOf(sources.map { it.id }) }
-    val rowHeights = remember { mutableStateMapOf<String, Int>() }
-    var draggingId by remember { mutableStateOf<String?>(null) }
-    var dragDeltaY by remember { mutableStateOf(0f) }
-    var dragStartIndex by remember { mutableStateOf(0) }
-    // Sync external order changes only while not dragging.
-    LaunchedEffect(sources.map { it.id }) {
-        if (draggingId == null) workingOrder = sources.map { it.id }
-    }
+    LaunchedEffect(sources.map { it.id }) { workingOrder = sources.map { it.id } }
     val canReorder = enabled && sources.size > 1
     val orderedSources = workingOrder.mapNotNull { sourcesById[it] }
 
@@ -117,493 +188,249 @@ fun SourceManagementSheet(
         onReorder(next)
     }
 
-    MorpheAlertDialog(
-        onDismiss = onDismiss,
-        title = {
+    val uiStates = remember(orderedSources, sourceVersions, sourceChannels, sourceErrors, isLoading) {
+        orderedSources.map { s ->
+            PatchSourceUiState(
+                source = s,
+                version = sourceVersions[s.id],
+                channel = sourceChannels[s.id],
+                error = sourceErrors[s.id],
+                isLoading = isLoading && sourceVersions[s.id] == null && sourceErrors[s.id] == null,
+            )
+        }
+    }
+
+    val density = LocalDensity.current
+    val windowSize = LocalWindowInfo.current.containerSize
+    // Both dimensions are driven by the window's own size, not a static guess, and
+    // both use the same DIALOG_WINDOW_SCALE so the panel scales down proportionally
+    // instead of two independently-tuned ratios drifting apart. The width floor is
+    // deliberately low (just enough for one MIN_CARD_WIDTH card plus the surface's
+    // own padding and the grid's scrollbar gutter) so a genuinely narrow window can
+    // actually reach the 1-column layout the grid below computes.
+    val dialogWidth = with(density) { (windowSize.width * DIALOG_WINDOW_SCALE).toDp() }
+        .coerceIn(MIN_CARD_WIDTH + DIALOG_CONTENT_PADDING * 2 + GRID_SCROLLBAR_GUTTER, DIALOG_MAX_WIDTH)
+    val dialogMaxHeight = with(density) { (windowSize.height * DIALOG_WINDOW_SCALE).toDp() }
+        .coerceIn(DIALOG_MIN_HEIGHT, DIALOG_MAX_HEIGHT)
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        MorpheDialogSurface(
+            modifier = Modifier.width(dialogWidth),
+            // Accent border: without it this panel — same dark surface colour as
+            // the home screen behind it — has nothing to visually separate it,
+            // especially at this reduced scale where more of that background
+            // shows around the edges.
+            border = MorpheOutline.accent(),
+            contentModifier = Modifier.heightIn(max = dialogMaxHeight),
+            horizontalAlignment = Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = stringResource(Res.string.source_sheet_title),
-                    style = MorpheTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    stringResource(Res.string.source_sheet_title),
+                    fontFamily = font,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 16.sp,
                 )
-                MorpheIconButton(
-                    icon = MorpheIcons.Refresh,
-                    contentDescription = stringResource(Res.string.source_sheet_reload_description),
-                    onClick = onRefresh,
-                    enabled = enabled,
-                    size = MorpheIconButtonSize.COMPACT,
-                    variant = MorpheIconButtonVariant.GHOST,
-                )
-            }
-        },
-        text = {
-            val scrollState = rememberScrollState()
-            Box {
-                Column(
-                    modifier = Modifier
-                        .verticalScroll(scrollState)
-                        .widthIn(min = 360.dp)
-                        .padding(end = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                Text(
-                    text = when {
-                        !enabled -> stringResource(Res.string.disabled_while_patching)
-                        mode == SourceSheetMode.SINGLE_SELECT ->
-                            stringResource(Res.string.source_sheet_quick_mode_hint)
-                        else -> stringResource(Res.string.source_sheet_multi_mode_hint)
-                    },
-                    style = MorpheTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Spacer(Modifier.height(4.dp))
-
-                orderedSources.forEachIndexed { index, source ->
-                  // Key by source ID to preserve gesture state during reorder.
-                  key(source.id) {
-                    val isDragging = source.id == draggingId
-                    // Row pitch for drag target selection and offset calculation.
-                    val slotPitch = ((rowHeights[source.id] ?: 0) + rowSpacingPx).coerceAtLeast(1f)
-                    val dragHandleModifier = if (canReorder) {
-                        Modifier.pointerInput(source.id) {
-                            detectDragGestures(
-                                onDragStart = {
-                                    draggingId = source.id
-                                    dragDeltaY = 0f
-                                    dragStartIndex = workingOrder.indexOf(source.id)
-                                },
-                                onDragEnd = { draggingId = null; dragDeltaY = 0f; onReorder(workingOrder) },
-                                onDragCancel = { draggingId = null; dragDeltaY = 0f },
-                                onDrag = { change, dragAmount ->
-                                    change.consume()
-                                    dragDeltaY += dragAmount.y
-                                    val curIdx = workingOrder.indexOf(source.id)
-                                    val desired = (dragStartIndex + (dragDeltaY / slotPitch).roundToInt())
-                                        .coerceIn(0, workingOrder.lastIndex)
-                                    if (desired != curIdx) {
-                                        workingOrder = workingOrder.toMutableList()
-                                             .apply { add(desired, removeAt(curIdx)) }
-                                    }
-                                }
-                            )
-                        }
-                    } else Modifier
-                    // Visual translation offset relative to current list index.
-                    val dragOffsetY = if (isDragging) dragDeltaY - (index - dragStartIndex) * slotPitch else 0f
-                    SourceRow(
-                        source = source,
-                        version = sourceVersions[source.id],
-                        channel = sourceChannels[source.id],
-                        isLoading = isLoading,
-                        error = sourceErrors[source.id],
-                        enabled = enabled,
-                        mode = mode,
-                        isActiveSelection = source.id == activeSourceId,
-                        onSelectSingle = { onSelectSingle(source.id) },
-                        onToggleEnabled = { newVal -> onToggleEnabled(source.id, newVal) },
-                        onEdit = { editingSource = source },
-                        onRemove = { onRemove(source.id) },
-                        onOpenPatches = { onOpenPatches(source.id) },
-                        canReorder = canReorder,
-                        position = index + 1,
-                        canMoveUp = index > 0,
-                        canMoveDown = index < orderedSources.lastIndex,
-                        onMoveUp = { commitMove(source.id, up = true) },
-                        onMoveDown = { commitMove(source.id, up = false) },
-                        dragHandleModifier = dragHandleModifier,
-                        isDragging = isDragging,
-                        dragOffsetY = dragOffsetY,
-                        onMeasured = { h -> rowHeights[source.id] = h },
+                // Reload sources, which re-resolves a folder source to its newest .mpp.
+                IconButton(onClick = onRefresh, enabled = enabled, modifier = Modifier.size(28.dp).handCursor(enabled)) {
+                    Icon(
+                        imageVector = MorpheIcons.Refresh,
+                        contentDescription = stringResource(Res.string.source_sheet_reload_description),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 0.7f else 0.3f),
+                        modifier = Modifier.size(16.dp),
                     )
-                  }
+                }
+            }
+
+            Text(
+                text = when {
+                    !enabled -> stringResource(Res.string.disabled_while_patching)
+                    mode == SourceSheetMode.SINGLE_SELECT -> stringResource(
+                        Res.string.source_sheet_summary_quick_mode,
+                        pluralStringResource(Res.plurals.count_sources, sources.size, sources.size),
+                    )
+                    else -> stringResource(
+                        Res.string.source_sheet_summary_multi_mode,
+                        pluralStringResource(Res.plurals.count_sources, sources.size, sources.size),
+                    )
+                },
+                fontSize = 11.sp,
+                fontFamily = font,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            // weight(fill = false): the grid gets whatever's left after the fixed rows
+            // below it (Add source, developer section, Done) claim their own full,
+            // natural height first — so those can never be pushed out of the dialog's
+            // bounded height on a small window. The grid still only takes as much of
+            // that leftover space as its own content actually needs (fill = false),
+            // so a handful of sources doesn't leave a stretched, mostly-empty box.
+            BoxWithConstraints(Modifier.fillMaxWidth().weight(1f, fill = false)) {
+                // Derived from actual available width, not a hand-picked breakpoint
+                // table: as many MIN_CARD_WIDTH-or-wider columns as fit with
+                // CARD_SPACING between them. This is the one place column count is
+                // decided, so it can never silently drift out of sync with whatever
+                // width the dialog above actually resolves to.
+                val columns = (((maxWidth + CARD_SPACING) / (MIN_CARD_WIDTH + CARD_SPACING))
+                    .toInt())
+                    .coerceIn(1, MAX_COLUMNS)
+                val rows = uiStates.chunked(columns)
+                val listState = rememberLazyListState()
+
+                LazyColumn(
+                    state = listState,
+                    // maxHeight here is this Box's own resolved height (already
+                    // capped by the weight() above), not a second, independently
+                    // guessed number — the same principle as reusing maxWidth for
+                    // column count.
+                    modifier = Modifier.fillMaxWidth().heightIn(max = maxHeight),
+                    contentPadding = PaddingValues(end = GRID_SCROLLBAR_GUTTER),
+                    verticalArrangement = Arrangement.spacedBy(CARD_SPACING),
+                ) {
+                    items(items = rows, key = { row -> row.joinToString("-") { it.source.id } }) { row ->
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(CARD_SPACING)) {
+                            row.forEach { state ->
+                                key(state.source.id) {
+                                    SourceCard(
+                                        state = state,
+                                        patchCount = sourcePatchCounts[state.source.id],
+                                        updateAvailableVersion = sourceUpdateAvailable[state.source.id],
+                                        mode = mode,
+                                        isActiveSelection = state.source.id == activeSourceId,
+                                        enabled = enabled,
+                                        onToggleEnabled = { newVal -> onToggleEnabled(state.source.id, newVal) },
+                                        onPrimaryClick = {
+                                            if (mode == SourceSheetMode.SINGLE_SELECT) {
+                                                onSelectSingle(state.source.id)
+                                            } else {
+                                                // Expert mode: the card itself now opens
+                                                // this source's details (previously this
+                                                // switched to the source and pushed the
+                                                // legacy single-source PatchesScreen —
+                                                // removed; see HomeScreen.kt).
+                                                detailsSourceId = state.source.id
+                                            }
+                                        },
+                                        onOpenDetails = { detailsSourceId = state.source.id },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                            }
+                            repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                        }
+                    }
                 }
 
-                Spacer(Modifier.height(2.dp))
+                if (listState.canScrollBackward || listState.canScrollForward) {
+                    VerticalScrollbar(
+                        modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(vertical = 2.dp),
+                        adapter = rememberScrollbarAdapter(listState),
+                        style = MorpheScrollbarStyle(),
+                    )
+                }
+            }
 
-                MorpheButton(
-                    label = stringResource(Res.string.add_source),
-                    icon = MorpheIcons.Add,
-                    variant = MorpheButtonVariant.OUTLINED,
-                    size = MorpheButtonSize.DEFAULT,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = enabled,
-                    onClick = { showAddDialog = true },
-                )
+            AddSourceRow(onClick = { showAddDialog = true }, enabled = enabled)
 
                 // Exclusions section rendered when developer options are enabled.
-                DeveloperMppExclusionsSection(enabled = enabled)
-                }
+            DeveloperMppExclusionsSection(enabled = enabled)
 
-                if (scrollState.maxValue > 0) {
-                    VerticalScrollbar(
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .fillMaxHeight()
-                            .padding(vertical = 4.dp),
-                        adapter = rememberScrollbarAdapter(scrollState),
-                        style = MorpheScrollbarStyle()
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(
+                    onClick = onDismiss,
+                    shape = RoundedCornerShape(corners.small),
+                    modifier = Modifier.handCursor(),
+                ) {
+                    Text(
+                        stringResource(Res.string.source_sheet_done_button),
+                        fontFamily = font,
+                        fontWeight = FontWeight.Normal,
+                        fontSize = 11.sp,
                     )
                 }
             }
-        },
-        confirmButton = {
-            MorpheButton(
-                label = stringResource(Res.string.source_sheet_done_button),
-                onClick = onDismiss,
-                variant = MorpheButtonVariant.GHOST,
-                size = MorpheButtonSize.COMPACT,
-            )
         }
-    )
+    }
 
     if (showAddDialog) {
         AddPatchSourceDialog(
             isQuickMode = mode == SourceSheetMode.SINGLE_SELECT,
             onDismiss = { showAddDialog = false },
-            onAdd = {
-                onAdd(it)
-                showAddDialog = false
-            }
+            onAdd = { onAdd(it); showAddDialog = false },
         )
     }
 
-    editingSource?.let { src ->
-        EditPatchSourceDialog(
-            source = src,
-            isQuickMode = mode == SourceSheetMode.SINGLE_SELECT,
-            onDismiss = { editingSource = null },
-            onSave = {
-                onEdit(it)
-                editingSource = null
-            }
+    val detailsState = uiStates.find { it.source.id == detailsSourceId }
+    if (detailsState != null) {
+        val index = orderedSources.indexOfFirst { it.id == detailsState.source.id }
+        SourceDetailsDialog(
+            state = detailsState,
+            patchCount = sourcePatchCounts[detailsState.source.id],
+            updateAvailableVersion = sourceUpdateAvailable[detailsState.source.id],
+            mode = mode,
+            isActiveSelection = detailsState.source.id == activeSourceId,
+            enabled = enabled,
+            canMoveUp = canReorder && index > 0,
+            canMoveDown = canReorder && index < orderedSources.lastIndex,
+            onDismiss = { detailsSourceId = null },
+            onToggleEnabled = { newVal -> onToggleEnabled(detailsState.source.id, newVal) },
+            onSelectSingle = { onSelectSingle(detailsState.source.id); detailsSourceId = null },
+            onSave = onEdit,
+            onRemove = { onRemove(detailsState.source.id) },
+            onRefresh = onRefresh,
+            onMoveUp = { commitMove(detailsState.source.id, up = true) },
+            onMoveDown = { commitMove(detailsState.source.id, up = false) },
         )
     }
 }
 
 @Composable
-private fun SourceRow(
-    source: PatchSource,
-    version: String?,
-    channel: Channel?,
-    isLoading: Boolean,
-    error: String? = null,
-    enabled: Boolean,
-    onToggleEnabled: (Boolean) -> Unit,
-    onEdit: () -> Unit,
-    onRemove: () -> Unit,
-    onOpenPatches: () -> Unit,
-    mode: SourceSheetMode,
-    isActiveSelection: Boolean,
-    onSelectSingle: () -> Unit,
-    canReorder: Boolean,
-    position: Int,
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
-    dragHandleModifier: Modifier,
-    isDragging: Boolean,
-    dragOffsetY: Float,
-    onMeasured: (heightPx: Int) -> Unit,
-) {
-    val colors = MorpheTheme.colors
-    val shapes = MorpheTheme.shapes
-    val hoverInteraction = remember(source.id) { MutableInteractionSource() }
-    val isHovered by hoverInteraction.collectIsHoveredAsState()
-    val isEnabled = source.enabled
-    val isDefault = !source.deletable
-    val canInteract = enabled
-    // Highlight enabled sources in multi-mode or active source in single-select mode.
-    val isHighlighted = if (mode == SourceSheetMode.SINGLE_SELECT) isActiveSelection else isEnabled
-
-    val animatedBorder by animateColorAsState(
-        targetValue = when {
-            isHovered && canInteract -> colors.primary.copy(alpha = if (isHighlighted) 0.7f else 0.45f)
-            isHighlighted -> colors.primary.copy(alpha = 0.35f)
-            else -> MaterialTheme.colorScheme.outlineVariant
-        },
-        animationSpec = MorpheMotion.fastTween()
-    )
-    val animatedBg by animateColorAsState(
-        targetValue = when {
-            isHovered && canInteract -> colors.primary.copy(alpha = if (isHighlighted) 0.12f else 0.05f)
-            isHighlighted -> colors.primary.copy(alpha = 0.06f)
-            else -> Color.Transparent
-        },
-        animationSpec = MorpheMotion.fastTween()
-    )
-
-    val baseBg = if (isHighlighted)
-        MaterialTheme.colorScheme.surfaceColorAtElevation(2.dp)
-    else
-        MaterialTheme.colorScheme.surfaceColorAtElevation(1.dp).copy(alpha = 0.5f)
-
-    Box(
+private fun AddSourceRow(onClick: () -> Unit, enabled: Boolean) {
+    val corners = LocalMorpheCorners.current
+    val font = LocalMorpheFont.current
+    val accents = LocalMorpheAccents.current
+    val shape = RoundedCornerShape(corners.small)
+    val alpha = if (enabled) 1f else 0.4f
+    Row(
         modifier = Modifier
-            .zIndex(if (isDragging) 1f else 0f)
-            .graphicsLayer { translationY = dragOffsetY }
-            .onSizeChanged { onMeasured(it.height) }
             .fillMaxWidth()
-            .clip(shapes.medium)
-            .border(
-                1.dp,
-                if (isDragging) colors.primary.copy(alpha = 0.7f) else animatedBorder,
-                shapes.medium
-            )
-            .background(baseBg)
-            .background(if (isDragging) colors.primary.copy(alpha = 0.10f) else animatedBg)
-            .hoverable(hoverInteraction)
-            .then(
-                if (canInteract) Modifier
-                    .handCursor()
-                    .clickable(onClick = if (mode == SourceSheetMode.SINGLE_SELECT) onSelectSingle else onOpenPatches)
-                else Modifier
-            )
-            .padding(horizontal = 12.dp, vertical = 10.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (canReorder) {
-                Box(
-                    modifier = Modifier
-                        .pointerHoverIcon(DragMoveCursor)
-                        .then(dragHandleModifier)
-                        .size(18.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = MorpheIcons.DragIndicator,
-                        contentDescription = stringResource(Res.string.drag_to_reorder),
-                        tint = if (isDragging) colors.primary
-                               else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                        modifier = Modifier.size(15.dp)
-                    )
-                }
-                Text(
-                    text = position.toString(),
-                    style = MorpheTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 3.dp, end = 7.dp)
-                )
-            }
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        text = source.name,
-                        style = if (isEnabled) MorpheTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
-                                else MorpheTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    MorpheBadge(
-                        text = when (source.type) {
-                            PatchSourceType.DEFAULT -> stringResource(Res.string.source_sheet_type_preinstalled)
-                            PatchSourceType.GITHUB, PatchSourceType.GITLAB -> stringResource(Res.string.source_sheet_remote_label)
-                            PatchSourceType.LOCAL -> stringResource(Res.string.source_sheet_local_label)
-                        },
-                        tone = MorpheBadgeTone.Neutral,
-                    )
-                }
-                val builtinLabel = stringResource(Res.string.source_sheet_builtin)
-                val githubLabel = stringResource(Res.string.github_label)
-                val gitlabLabel = stringResource(Res.string.source_sheet_gitlab_label)
-                val localFileLabel = stringResource(Res.string.patch_source_dialog_local_file_label)
-                Text(
-                    text = when (source.type) {
-                        PatchSourceType.DEFAULT -> source.url?.removePrefix("https://github.com/") ?: builtinLabel
-                        PatchSourceType.GITHUB -> source.url?.removePrefix("https://github.com/") ?: githubLabel
-                        PatchSourceType.GITLAB -> source.url?.removePrefix("https://gitlab.com/") ?: gitlabLabel
-                        PatchSourceType.LOCAL -> source.filePath?.let { File(it).name } ?: localFileLabel
-                    },
-                    style = MorpheTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (error != null) {
-                    Spacer(Modifier.height(3.dp))
-                    Text(
-                        text = error,
-                        style = MorpheTheme.typography.labelSmall,
-                        color = colors.danger,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.padding(horizontal = 6.dp)
-            ) {
-                if (error != null) {
-                    Text(
-                        text = stringResource(Res.string.failed),
-                        style = MorpheTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-                        color = colors.danger,
-                    )
-                } else if (isEnabled && version != null) {
-                    Text(
-                        text = version,
-                        style = MorpheTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-                        color = colors.primary
-                    )
-                    ChannelBadge(channel = channel)
-                } else if (isEnabled && isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(12.dp),
-                        strokeWidth = 2.dp,
-                        color = colors.primary,
-                    )
-                    Text(
-                        text = stringResource(Res.string.source_sheet_status_resolving),
-                        style = MorpheTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
-                        color = colors.primary,
-                    )
-                }
-            }
-
-            if (canReorder) {
-                ReorderArrows(
-                    canMoveUp = canMoveUp,
-                    canMoveDown = canMoveDown,
-                    onMoveUp = onMoveUp,
-                    onMoveDown = onMoveDown,
-                    accentColor = colors.primary,
-                )
-                Spacer(Modifier.width(2.dp))
-            }
-            // Edit action is available for all sources; delete is hidden for the default source.
-            if (enabled) {
-                MorpheIconButton(
-                    icon = MorpheIcons.Edit,
-                    contentDescription = stringResource(Res.string.source_sheet_edit_description),
-                    onClick = onEdit,
-                    size = MorpheIconButtonSize.COMPACT,
-                    variant = MorpheIconButtonVariant.GHOST,
-                )
-                if (!isDefault) {
-                    MorpheIconButton(
-                        icon = MorpheIcons.Close,
-                        contentDescription = stringResource(Res.string.remove),
-                        onClick = onRemove,
-                        size = MorpheIconButtonSize.COMPACT,
-                        variant = MorpheIconButtonVariant.GHOST,
-                    )
-                }
-                Spacer(Modifier.width(4.dp))
-            }
-            when (mode) {
-                SourceSheetMode.MULTI_TOGGLE -> MorpheSwitch(
-                    checked = isEnabled,
-                    onCheckedChange = onToggleEnabled,
-                    accentColor = colors.primary,
-                    enabled = enabled,
-                    modifier = Modifier.scale(0.8f)
-                )
-                SourceSheetMode.SINGLE_SELECT -> Box(
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable(
-                            enabled = enabled,
-                            onClick = onSelectSingle
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    val containerColor = if (isActiveSelection) colors.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f)
-                    val contentColor = if (isActiveSelection) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                    
-                    StatusCircleIcon(
-                        icon = MorpheIcons.Check,
-                        containerColor = containerColor,
-                        contentColor = contentColor,
-                        modifier = Modifier.alpha(if (enabled) 1f else 0.38f)
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** Up/down arrow controls for step-by-step source reordering. */
-@Composable
-private fun ReorderArrows(
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
-    accentColor: Color,
-) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        ReorderArrow(MorpheIcons.KeyboardArrowUp, stringResource(Res.string.source_sheet_move_up_description), canMoveUp, accentColor, onMoveUp)
-        ReorderArrow(MorpheIcons.KeyboardArrowDown, stringResource(Res.string.source_sheet_move_down_description), canMoveDown, accentColor, onMoveDown)
-    }
-}
-
-@Composable
-private fun ReorderArrow(
-    icon: ImageVector,
-    description: String,
-    active: Boolean,
-    accentColor: Color,
-    onClick: () -> Unit,
-) {
-    val interaction = remember { MutableInteractionSource() }
-    val isHovered by interaction.collectIsHoveredAsState()
-    Box(
-        modifier = Modifier
-            .size(width = 18.dp, height = 13.dp)
-            .then(
-                if (active) Modifier
-                    .hoverable(interaction)
-                    .handCursor()
-                    .clickable(onClick = onClick)
-                else Modifier
-            ),
-        contentAlignment = Alignment.Center
+            .clip(shape)
+            .background(accents.primary.copy(alpha = 0.06f * alpha), shape)
+            .border(1.dp, accents.primary.copy(alpha = 0.35f * alpha), shape)
+            .then(if (enabled) Modifier.handCursor().clickable(onClick = onClick) else Modifier)
+            .padding(vertical = 10.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            imageVector = icon,
-            contentDescription = description,
-            tint = when {
-                !active -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
-                isHovered -> accentColor
-                else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-            },
-            modifier = Modifier.size(15.dp)
+            MorpheIcons.Add,
+            contentDescription = null,
+            tint = accents.primary.copy(alpha = alpha),
+            modifier = Modifier.size(14.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            stringResource(Res.string.add_source),
+            fontFamily = font,
+            fontWeight = FontWeight.Medium,
+            fontSize = 12.sp,
+            color = accents.primary.copy(alpha = alpha),
         )
     }
 }
 
-@Composable
-private fun ChannelBadge(
-    channel: Channel?,
-) {
-    val label = when (channel) {
-        Channel.STABLE_LATEST -> stringResource(Res.string.version_label_latest_stable)
-        Channel.STABLE_OLDER -> stringResource(Res.string.source_sheet_channel_older_stable)
-        Channel.DEV_LATEST -> stringResource(Res.string.version_label_latest_dev)
-        Channel.DEV_OLDER -> stringResource(Res.string.source_sheet_channel_older_dev)
-        Channel.LOCAL -> stringResource(Res.string.source_sheet_local_label)
-        else -> stringResource(Res.string.version_label_latest_stable)
-    }
-    val color = channelColor(channel)
-    MorpheBadge(
-        text = label,
-        containerColor = color.copy(alpha = 0.12f),
-        contentColor = color,
-    )
-}
-
-/** Developer section for configuring excluded .mpp file patterns for folder sources. */
+/**
+ * Developer-only section at the bottom of the source sheet. Lets a patch developer add
+ * glob or plain-word patterns for .mpp files that a folder source should ignore when it
+ * auto-loads the newest build. Self-contained, it reads and persists through
+ * the engine config repository the same way the add and edit source dialogs pull developer state.
+ * Renders nothing unless Developer options are on.
+ */
 @Composable
 private fun DeveloperMppExclusionsSection(enabled: Boolean) {
     val engineConfigRepository = koinInject<EngineConfigRepository>()
@@ -621,17 +448,20 @@ private fun DeveloperMppExclusionsSection(enabled: Boolean) {
 
     if (!loaded || !developerOptions) return
 
+    val font = LocalMorpheFont.current
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Spacer(Modifier.height(4.dp))
         Box(
             Modifier
                 .fillMaxWidth()
                 .height(1.dp)
-                .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.12f))
+                .background(MorpheOutline.subtleColor()),
         )
         Text(
-            text = stringResource(Res.string.source_sheet_ignored_mpp_title),
-            style = MorpheTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+            stringResource(Res.string.source_sheet_ignored_mpp_title),
+            fontFamily = font,
+            fontWeight = FontWeight.Medium,
+            fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurface,
         )
         ExcludedPatternsEditor(
@@ -652,6 +482,9 @@ private fun ExcludedPatternsEditor(
     onChange: (List<String>) -> Unit,
     enabled: Boolean,
 ) {
+    val font = LocalMorpheFont.current
+    val accents = LocalMorpheAccents.current
+    val corners = LocalMorpheCorners.current
     var draft by remember { mutableStateOf("") }
 
     fun commitDraft() {
@@ -665,7 +498,10 @@ private fun ExcludedPatternsEditor(
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = stringResource(Res.string.source_sheet_ignored_mpp_hint),
-            style = MorpheTheme.typography.labelSmall,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Normal,
+            fontFamily = font,
+            lineHeight = 15.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         SlimTextField(
@@ -675,16 +511,19 @@ private fun ExcludedPatternsEditor(
             enabled = enabled,
             modifier = Modifier.fillMaxWidth(),
             trailing = {
-                MorpheIconButton(
-                    icon = MorpheIcons.Add,
-                    contentDescription = stringResource(Res.string.source_sheet_add_pattern_description),
+                IconButton(
                     onClick = { commitDraft() },
                     enabled = enabled && draft.isNotBlank(),
-                    size = MorpheIconButtonSize.COMPACT,
-                    variant = MorpheIconButtonVariant.GHOST,
-                    tint = if (draft.isNotBlank()) MorpheTheme.colors.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                )
+                    modifier = Modifier.size(24.dp),
+                ) {
+                    Icon(
+                        imageVector = MorpheIcons.Add,
+                        contentDescription = stringResource(Res.string.source_sheet_add_pattern_description),
+                        modifier = Modifier.size(16.dp),
+                        tint = if (draft.isNotBlank()) accents.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                    )
+                }
             },
         )
         patterns.forEach { pat ->
@@ -695,42 +534,25 @@ private fun ExcludedPatternsEditor(
             ) {
                 Text(
                     text = pat,
-                    style = MorpheTheme.typography.bodySmall,
+                    fontFamily = font,
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f),
                 )
-                MorpheIconButton(
-                    icon = MorpheIcons.Close,
-                    contentDescription = stringResource(Res.string.source_sheet_remove_pattern_description),
+                IconButton(
                     onClick = { onChange(patterns.filterNot { it == pat }) },
                     enabled = enabled,
-                    size = MorpheIconButtonSize.COMPACT,
-                    variant = MorpheIconButtonVariant.GHOST,
-                )
+                    modifier = Modifier.size(20.dp),
+                ) {
+                    Icon(
+                        imageVector = MorpheIcons.Close,
+                        contentDescription = stringResource(Res.string.source_sheet_remove_pattern_description),
+                        modifier = Modifier.size(13.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    )
+                }
             }
         }
-    }
-}
-
-@Composable
-private fun StatusCircleIcon(
-    icon: ImageVector,
-    containerColor: Color,
-    contentColor: Color,
-    modifier: Modifier = Modifier,
-    size: Dp = 24.dp
-) {
-    Box(
-        modifier = modifier
-            .size(size)
-            .background(containerColor, CircleShape),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            modifier = Modifier.size(size * 0.6f),
-            tint = contentColor
-        )
     }
 }
